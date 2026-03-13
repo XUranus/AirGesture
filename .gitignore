@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Claude Code
+.claude/
+
+# Model files (large, download separately)
+models/*.task
+models/*.tflite
+models/*.onnx
+
+# Screenshots and temporary files
+*.png
+!docs/images/*.png
+temp/
+received/
+
+# Debug outputs
+debug_screenshot_*.png
+debug_logs_*.json
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Test outputs
+.pytest_cache/
+.coverage
+htmlcov/
+
+# PyInstaller
+*.spec
