@@ -24,6 +24,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.grabdrop.service.ServiceState
 import com.grabdrop.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -36,6 +37,8 @@ fun MainScreen(
     onStartClicked: () -> Unit,
     onStopClicked: () -> Unit
 ) {
+    val debugMode by ServiceState.debugMode.collectAsState()
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -49,6 +52,19 @@ fun MainScreen(
                         )
                         Spacer(Modifier.width(10.dp))
                         Text("GrabDrop", fontWeight = FontWeight.Bold)
+                    }
+                },
+                actions = {
+                    // Debug toggle
+                    IconButton(
+                        onClick = { ServiceState.setDebugMode(!debugMode) }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.BugReport,
+                            contentDescription = "Toggle Debug",
+                            tint = if (debugMode) Color(0xFFFF9800) else TextSecondary,
+                            modifier = Modifier.size(24.dp)
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -66,6 +82,39 @@ fun MainScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Spacer(Modifier.height(12.dp))
+
+            // Debug mode banner
+            AnimatedVisibility(visible = debugMode) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFF3E2723)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.BugReport,
+                            contentDescription = null,
+                            tint = Color(0xFFFF9800),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Debug Mode ON — verbose logs + debug frames",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFFFCC80)
+                        )
+                    }
+                }
+            }
 
             // Status Card
             StatusCard(isRunning = isRunning, statusText = statusText)
@@ -104,12 +153,12 @@ fun MainScreen(
 
             Spacer(Modifier.height(12.dp))
 
-            // How it works info — only when not running
+            // How it works — only when not running and log empty
             AnimatedVisibility(visible = !isRunning && eventLog.isEmpty()) {
                 HowItWorksCard()
             }
 
-            // Event Log — takes remaining space
+            // Event Log
             EventLogCard(
                 eventLog = eventLog,
                 modifier = Modifier
@@ -125,12 +174,8 @@ fun MainScreen(
 private fun StatusCard(isRunning: Boolean, statusText: String) {
     val pulseAnim = rememberInfiniteTransition(label = "pulse")
     val pulseScale by pulseAnim.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.4f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1000),
-            repeatMode = RepeatMode.Reverse
-        ),
+        initialValue = 1f, targetValue = 1.4f,
+        animationSpec = infiniteRepeatable(tween(1000), RepeatMode.Reverse),
         label = "pulse_scale"
     )
 
@@ -140,9 +185,7 @@ private fun StatusCard(isRunning: Boolean, statusText: String) {
         colors = CardDefaults.cardColors(containerColor = DarkCard)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
+            modifier = Modifier.fillMaxWidth().padding(20.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
@@ -155,16 +198,12 @@ private fun StatusCard(isRunning: Boolean, statusText: String) {
             Spacer(Modifier.width(14.dp))
             Column {
                 Text(
-                    text = if (isRunning) "Active" else "Inactive",
+                    if (isRunning) "Active" else "Inactive",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = if (isRunning) GreenActive else TextSecondary
                 )
-                Text(
-                    text = statusText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary
-                )
+                Text(statusText, style = MaterialTheme.typography.bodyMedium, color = TextSecondary)
             }
         }
     }
@@ -174,9 +213,7 @@ private fun StatusCard(isRunning: Boolean, statusText: String) {
 private fun StatCard(
     modifier: Modifier = Modifier,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    value: String,
-    color: Color
+    label: String, value: String, color: Color
 ) {
     Card(
         modifier = modifier,
@@ -187,61 +224,30 @@ private fun StatCard(
             modifier = Modifier.padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = color,
-                modifier = Modifier.size(28.dp)
-            )
+            Icon(icon, null, tint = color, modifier = Modifier.size(28.dp))
             Spacer(Modifier.height(8.dp))
-            Text(
-                text = value,
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                color = color
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary
-            )
+            Text(value, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = color)
+            Text(label, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
         }
     }
 }
 
 @Composable
-private fun GrabDropButton(
-    isRunning: Boolean,
-    onStartClicked: () -> Unit,
-    onStopClicked: () -> Unit
-) {
-    val buttonScale by animateFloatAsState(
-        targetValue = 1f,
-        animationSpec = spring(dampingRatio = 0.6f),
-        label = "btn_scale"
-    )
-
+private fun GrabDropButton(isRunning: Boolean, onStartClicked: () -> Unit, onStopClicked: () -> Unit) {
     Button(
         onClick = { if (isRunning) onStopClicked() else onStartClicked() },
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(56.dp)
-            .scale(buttonScale),
+        modifier = Modifier.fillMaxWidth().height(56.dp),
         shape = RoundedCornerShape(16.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (isRunning) RedStop else Blue600
-        )
+        colors = ButtonDefaults.buttonColors(containerColor = if (isRunning) RedStop else Blue600)
     ) {
         Icon(
-            imageVector = if (isRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
-            contentDescription = null,
-            modifier = Modifier.size(26.dp)
+            if (isRunning) Icons.Default.Stop else Icons.Default.PlayArrow,
+            null, modifier = Modifier.size(26.dp)
         )
         Spacer(Modifier.width(10.dp))
         Text(
-            text = if (isRunning) "STOP SERVICE" else "START",
-            style = MaterialTheme.typography.labelLarge,
-            fontSize = 18.sp
+            if (isRunning) "STOP SERVICE" else "START",
+            style = MaterialTheme.typography.labelLarge, fontSize = 18.sp
         )
     }
 }
@@ -249,38 +255,19 @@ private fun GrabDropButton(
 @Composable
 private fun HowItWorksCard() {
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = DarkCard)
     ) {
         Column(modifier = Modifier.padding(20.dp)) {
-            Text(
-                text = "How it works",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = Blue400
-            )
+            Text("How it works", style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold, color = Blue400)
             Spacer(Modifier.height(12.dp))
-
-            HowItWorksStep(
-                emoji = "✊",
-                title = "Grab to capture",
-                desc = "Make a grab gesture (palm → fist) to take a screenshot"
-            )
+            HowItWorksStep("✊", "Grab to capture", "Make a grab gesture (palm → fist) to take a screenshot")
             Spacer(Modifier.height(10.dp))
-            HowItWorksStep(
-                emoji = "📡",
-                title = "Auto-broadcast",
-                desc = "The screenshot is announced to nearby devices on your WiFi"
-            )
+            HowItWorksStep("📡", "Auto-broadcast", "The screenshot is announced to nearby devices on your WiFi")
             Spacer(Modifier.height(10.dp))
-            HowItWorksStep(
-                emoji = "🤚",
-                title = "Release to receive",
-                desc = "On another device, open your hand (fist → palm) to receive it"
-            )
+            HowItWorksStep("🤚", "Release to receive", "On another device, open your hand (fist → palm) to receive it")
         }
     }
 }
@@ -288,36 +275,21 @@ private fun HowItWorksCard() {
 @Composable
 private fun HowItWorksStep(emoji: String, title: String, desc: String) {
     Row {
-        Text(text = emoji, fontSize = 22.sp)
+        Text(emoji, fontSize = 22.sp)
         Spacer(Modifier.width(12.dp))
         Column {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Medium,
-                color = TextPrimary
-            )
-            Text(
-                text = desc,
-                style = MaterialTheme.typography.bodySmall,
-                color = TextSecondary
-            )
+            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = TextPrimary)
+            Text(desc, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
         }
     }
 }
 
 @Composable
-private fun EventLogCard(
-    eventLog: List<String>,
-    modifier: Modifier = Modifier
-) {
+private fun EventLogCard(eventLog: List<String>, modifier: Modifier = Modifier) {
     val listState = rememberLazyListState()
 
-    // Auto-scroll to top when new events arrive
     LaunchedEffect(eventLog.size) {
-        if (eventLog.isNotEmpty()) {
-            listState.animateScrollToItem(0)
-        }
+        if (eventLog.isNotEmpty()) listState.animateScrollToItem(0)
     }
 
     Card(
@@ -325,70 +297,36 @@ private fun EventLogCard(
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = DarkCard)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp)
-        ) {
+        Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.Terminal,
-                    contentDescription = null,
-                    tint = TextSecondary,
-                    modifier = Modifier.size(18.dp)
-                )
+                Icon(Icons.Default.Terminal, null, tint = TextSecondary, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text(
-                    text = "Live Log",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = TextSecondary
-                )
+                Text("Live Log", style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold, color = TextSecondary)
                 Spacer(Modifier.weight(1f))
-                Text(
-                    text = "${eventLog.size} events",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary
-                )
+                Text("${eventLog.size}", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
             }
-
             Spacer(Modifier.height(8.dp))
 
             if (eventLog.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "Tap START to begin gesture detection...",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary
-                    )
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Tap START to begin...", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                 }
             } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize()
-                ) {
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                     items(eventLog) { event ->
                         Text(
-                            text = event,
+                            event,
                             style = MaterialTheme.typography.bodySmall.copy(
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp,
-                                lineHeight = 15.sp
+                                fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 15.sp
                             ),
                             color = when {
-                                "❌" in event || "💀" in event || "CRASH" in event ->
-                                    RedStop
-                                "✅" in event || "CONFIRMED" in event ->
-                                    GreenActive
-                                "🔔" in event || "WAKEUP" in event ->
-                                    Cyan400
-                                "⏱️" in event ->
-                                    Blue400
-                                "📊" in event ->
-                                    TextSecondary
+                                "❌" in event || "💀" in event -> RedStop
+                                "✅" in event || "CONFIRMED" in event -> GreenActive
+                                "🔔" in event || "WAKEUP" in event -> Cyan400
+                                "⏱️" in event -> Blue400
+                                "🔄" in event -> Color(0xFFFF9800)
+                                "📊" in event || "🐛" in event -> TextSecondary
                                 else -> TextPrimary
                             },
                             maxLines = 3,

@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -27,11 +28,14 @@ import com.grabdrop.util.SoundPlayer
 import kotlinx.coroutines.*
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.ConcurrentLinkedDeque
 
 class GrabDropService : Service() {
 
     companion object {
         private const val TAG = "GrabDropService"
+        private const val RETROACTIVE_MATCH_WINDOW_MS = 3_000L
+        private const val RECEIVED_NOTIFICATION_ID = 2001
     }
 
     private val serviceScope = CoroutineScope(
@@ -50,8 +54,17 @@ class GrabDropService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastGrabTime = 0L
-    private var pendingOffer: ScreenshotOffer? = null
     private var defaultUncaughtHandler: Thread.UncaughtExceptionHandler? = null
+
+    private val pendingOffers = ConcurrentLinkedDeque<TimestampedOffer>()
+    @Volatile
+    private var lastUnmatchedReleaseTime = 0L
+    private val offerLock = Any()
+
+    data class TimestampedOffer(
+        val offer: ScreenshotOffer,
+        val receivedAt: Long = System.currentTimeMillis()
+    )
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -68,7 +81,6 @@ class GrabDropService : Service() {
 
         screenCaptureManager = ScreenCaptureManager(this)
         overlayManager = OverlayManager(this)
-        // Pass overlayManager to gesture detector for wakeup indicator
         gestureDetector = RealGestureDetector(this, overlayManager)
         networkManager = NetworkManager(this)
         soundPlayer = SoundPlayer(this)
@@ -79,7 +91,6 @@ class GrabDropService : Service() {
 
         when (intent?.action) {
             Constants.SERVICE_ACTION_STOP -> {
-                Log.d(TAG, "Stop action received")
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -89,15 +100,13 @@ class GrabDropService : Service() {
             val notification = buildNotification()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 startForeground(
-                    Constants.NOTIFICATION_ID,
-                    notification,
+                    Constants.NOTIFICATION_ID, notification,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
                             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
                 )
             } else {
                 startForeground(Constants.NOTIFICATION_ID, notification)
             }
-            Log.d(TAG, "startForeground succeeded")
         } catch (e: Exception) {
             Log.e(TAG, "startForeground FAILED", e)
             stopSelf()
@@ -105,7 +114,6 @@ class GrabDropService : Service() {
         }
 
         if (!MediaProjectionHolder.isAvailable) {
-            Log.e(TAG, "No MediaProjection data in holder!")
             ServiceState.setRunning(true)
             ServiceState.addEvent(formatTime() + " ⚠️ Started WITHOUT screen capture")
             acquireWakeLock()
@@ -114,51 +122,41 @@ class GrabDropService : Service() {
         }
 
         val (resultCode, resultData) = MediaProjectionHolder.consume()
-        Log.d(TAG, "MediaProjectionHolder: resultCode=$resultCode, hasData=${resultData != null}")
-
         try {
             screenCaptureManager.initProjection(resultCode, resultData!!)
-            Log.d(TAG, "MediaProjection initialized successfully")
         } catch (e: Exception) {
-            Log.e(TAG, "MediaProjection init FAILED", e)
             ServiceState.addEvent(formatTime() + " ⚠️ Screen capture init failed: ${e.message}")
         }
 
         acquireWakeLock()
         startGestureAndNetwork()
-
         ServiceState.setRunning(true)
-        ServiceState.addEvent(formatTime() + " ✅ Service started with screen capture + gesture detection")
+        ServiceState.addEvent(formatTime() + " ✅ Service started")
 
         return START_STICKY
     }
 
     override fun onDestroy() {
-        Log.d(TAG, "onDestroy called")
         stopAll()
-        defaultUncaughtHandler?.let {
-            Thread.setDefaultUncaughtExceptionHandler(it)
-        }
+        defaultUncaughtHandler?.let { Thread.setDefaultUncaughtExceptionHandler(it) }
         ServiceState.setRunning(false)
         ServiceState.addEvent(formatTime() + " Service stopped")
         super.onDestroy()
     }
 
     private fun startGestureAndNetwork() {
-        Log.d(TAG, "Starting gesture detector and network manager")
         networkManager.start()
         gestureDetector.start()
 
         serviceScope.launch {
             gestureDetector.events.collect { event ->
-                Log.d(TAG, "Gesture event received: $event")
                 try {
                     when (event) {
                         is GestureEvent.Grab -> handleGrab()
                         is GestureEvent.Release -> handleRelease()
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error handling gesture event", e)
+                    Log.e(TAG, "Error handling gesture", e)
                     ServiceState.addEvent(formatTime() + " ⚠️ Error: ${e.message}")
                 }
             }
@@ -173,90 +171,137 @@ class GrabDropService : Service() {
 
         serviceScope.launch {
             networkManager.nearbyDeviceCount.collect { count ->
-                Log.d(TAG, "Nearby device count updated: $count")
                 ServiceState.setNearbyDevices(count)
             }
         }
-
-        Log.d(TAG, "All components started")
     }
 
     private fun stopAll() {
-        Log.d(TAG, "Stopping all components")
-        try { gestureDetector.stop() } catch (e: Exception) { Log.e(TAG, "gesture stop", e) }
-        try { networkManager.stop() } catch (e: Exception) { Log.e(TAG, "network stop", e) }
-        try { screenCaptureManager.release() } catch (e: Exception) { Log.e(TAG, "capture stop", e) }
-        try { soundPlayer.release() } catch (e: Exception) { Log.e(TAG, "sound stop", e) }
-        try { overlayManager.removeAll() } catch (e: Exception) { Log.e(TAG, "overlay stop", e) }
+        try { gestureDetector.stop() } catch (_: Exception) {}
+        try { networkManager.stop() } catch (_: Exception) {}
+        try { screenCaptureManager.release() } catch (_: Exception) {}
+        try { soundPlayer.release() } catch (_: Exception) {}
+        try { overlayManager.removeAll() } catch (_: Exception) {}
         releaseWakeLock()
         serviceScope.cancel()
     }
 
+    // --- Offer Queue ---
+
+    private fun addOffer(offer: ScreenshotOffer) {
+        val ts = TimestampedOffer(offer)
+        synchronized(offerLock) {
+            pendingOffers.addLast(ts)
+            cleanupExpiredOffers()
+            ServiceState.addEvent(formatTime() +
+                    " 📡 Offer queued from ${offer.senderName} (${pendingOffers.size} pending)")
+        }
+    }
+
+    private fun getBestOffer(): ScreenshotOffer? {
+        synchronized(offerLock) {
+            cleanupExpiredOffers()
+            if (pendingOffers.isEmpty()) return null
+            val best = pendingOffers.removeLast()
+            pendingOffers.clear()
+            return best.offer
+        }
+    }
+
+    private fun cleanupExpiredOffers() {
+        val now = System.currentTimeMillis()
+        while (pendingOffers.isNotEmpty()) {
+            val oldest = pendingOffers.peekFirst() ?: break
+            if (now - oldest.receivedAt > Constants.SCREENSHOT_OFFER_TIMEOUT_MS) {
+                pendingOffers.removeFirst()
+            } else break
+        }
+    }
+
+    // --- Core Logic ---
+
     private suspend fun handleGrab() {
         val now = System.currentTimeMillis()
-        if (now - lastGrabTime < Constants.GRAB_COOLDOWN_MS) {
-            Log.d(TAG, "Grab ignored (cooldown)")
-            return
-        }
+        if (now - lastGrabTime < Constants.GRAB_COOLDOWN_MS) return
         lastGrabTime = now
 
         ServiceState.setStatus("Taking screenshot...")
         ServiceState.addEvent(formatTime() + " ✊ GRAB detected")
 
-        val bitmap: Bitmap?
-        try {
-            bitmap = screenCaptureManager.capture()
-        } catch (e: Exception) {
-            Log.e(TAG, "Screenshot capture exception", e)
+        val bitmap = try { screenCaptureManager.capture() }
+        catch (e: Exception) {
             ServiceState.addEvent(formatTime() + " ❌ Screenshot failed: ${e.message}")
             ServiceState.setStatus("Monitoring gestures...")
             return
         }
 
         if (bitmap == null) {
-            Log.e(TAG, "Screenshot capture returned null")
             ServiceState.addEvent(formatTime() + " ❌ Screenshot returned null")
             ServiceState.setStatus("Monitoring gestures...")
             return
         }
 
-        Log.d(TAG, "Screenshot captured: ${bitmap.width}x${bitmap.height}")
-
-        try {
-            val uri = MediaStoreHelper.saveBitmap(this@GrabDropService, bitmap, "GrabDrop_Sent")
-            Log.d(TAG, "Screenshot saved: $uri")
-        } catch (e: Exception) { Log.e(TAG, "Save failed", e) }
-
-        try { overlayManager.showGrabAnimation(bitmap) } catch (e: Exception) { Log.e(TAG, "Overlay failed", e) }
-        try { soundPlayer.playShutter() } catch (e: Exception) { Log.e(TAG, "Sound failed", e) }
+        try { MediaStoreHelper.saveBitmap(this, bitmap, "GrabDrop_Sent") } catch (_: Exception) {}
+        try { overlayManager.showGrabAnimation(bitmap) } catch (_: Exception) {}
+        try { soundPlayer.playShutter() } catch (_: Exception) {}
 
         try {
             val imageData = MediaStoreHelper.bitmapToByteArray(bitmap)
             networkManager.broadcastScreenshotAvailable(imageData)
-        } catch (e: Exception) { Log.e(TAG, "Broadcast failed", e) }
+        } catch (_: Exception) {}
 
         ServiceState.addEvent(formatTime() + " 📸 Screenshot captured & broadcast sent")
         ServiceState.setStatus("Monitoring gestures...")
     }
 
     private suspend fun handleRelease() {
-        val offer = pendingOffer
+        val offer = getBestOffer()
+
         if (offer == null) {
-            ServiceState.addEvent(formatTime() + " 🤚 RELEASE detected (no pending offer)")
+            ServiceState.addEvent(formatTime() + " 🤚 RELEASE — no offer yet, waiting for retroactive match")
+            lastUnmatchedReleaseTime = System.currentTimeMillis()
             return
         }
 
-        if (System.currentTimeMillis() - offer.timestamp > Constants.SCREENSHOT_OFFER_TIMEOUT_MS) {
-            pendingOffer = null
-            return
-        }
-        pendingOffer = null
+        ServiceState.addEvent(formatTime() + " 🤚 RELEASE — matched offer from ${offer.senderName}")
+        downloadAndSave(offer)
+    }
 
+    private fun handleIncomingOffer(offer: ScreenshotOffer) {
+        addOffer(offer)
+
+        val now = System.currentTimeMillis()
+        val releaseAge = now - lastUnmatchedReleaseTime
+        val hadRecentRelease = releaseAge in 1..RETROACTIVE_MATCH_WINDOW_MS
+
+        if (hadRecentRelease) {
+            lastUnmatchedReleaseTime = 0L
+            ServiceState.addEvent(formatTime() +
+                    " 🔄 Retroactive match! RELEASE was ${releaseAge}ms ago")
+
+            val matchedOffer = getBestOffer()
+            if (matchedOffer != null) {
+                serviceScope.launch { downloadAndSave(matchedOffer) }
+            }
+        }
+    }
+
+    private suspend fun downloadAndSave(offer: ScreenshotOffer) {
         ServiceState.setStatus("Receiving screenshot...")
-        ServiceState.addEvent(formatTime() + " 🤚 RELEASE — downloading from ${offer.senderName}")
+        ServiceState.addEvent(formatTime() + " 📥 Downloading from ${offer.senderName}...")
 
-        val data = try { networkManager.downloadScreenshot(offer) }
-        catch (e: Exception) { Log.e(TAG, "Download exception", e); null }
+        // Start looping ripple while downloading
+        overlayManager.startLoopingRipple()
+
+        val data = try {
+            networkManager.downloadScreenshot(offer)
+        } catch (e: Exception) {
+            Log.e(TAG, "Download exception", e)
+            null
+        }
+
+        // Stop looping ripple
+        overlayManager.stopLoopingRipple()
 
         if (data == null) {
             ServiceState.addEvent(formatTime() + " ❌ Download failed")
@@ -267,50 +312,88 @@ class GrabDropService : Service() {
         var bitmap: Bitmap? = null
         try {
             bitmap = MediaStoreHelper.byteArrayToBitmap(data)
-            val uri = MediaStoreHelper.saveBitmap(this@GrabDropService, bitmap, "GrabDrop_Received")
+            val uri = MediaStoreHelper.saveBitmap(this, bitmap, "GrabDrop_Received")
+
+            // Final single ripple + sound
             try { overlayManager.showReleaseAnimation() } catch (_: Exception) {}
             try { soundPlayer.playReceive() } catch (_: Exception) {}
+
             if (uri != null) {
-                try {
-                    startActivity(Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(uri, "image/png")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    })
-                } catch (_: Exception) {}
+                openReceivedImage(uri)
             }
-            ServiceState.addEvent(formatTime() + " 📥 Screenshot received & saved")
+
+            ServiceState.addEvent(formatTime() + " 📥 Screenshot received & saved!")
         } catch (e: Exception) {
             ServiceState.addEvent(formatTime() + " ❌ Processing failed: ${e.message}")
         } finally {
             bitmap?.recycle()
         }
+
         ServiceState.setStatus("Monitoring gestures...")
     }
 
-    private fun handleIncomingOffer(offer: ScreenshotOffer) {
-        Log.d(TAG, "Incoming offer from ${offer.senderName}")
-        pendingOffer = offer
-        ServiceState.addEvent(
-            formatTime() + " 📡 Offer from ${offer.senderName} — do RELEASE to receive"
+    /**
+     * Open received image — works whether app is foreground or background.
+     * Shows a notification with view action, AND tries to open directly.
+     */
+    private fun openReceivedImage(uri: Uri) {
+        // 1. Always post a notification so user can tap to view
+        val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "image/png")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        val viewPending = PendingIntent.getActivity(
+            this, uri.hashCode(), viewIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or
+                    PendingIntent.FLAG_IMMUTABLE or
+                    PendingIntent.FLAG_ONE_SHOT
         )
-        // On receiving device, auto-trigger release for testing
-        // Remove this line for production — the real gesture handles it
-        gestureDetector.triggerMockRelease(Constants.MOCK_RELEASE_DELAY_MS)
+
+        val notification = NotificationCompat.Builder(this, Constants.NOTIFICATION_CHANNEL_ID)
+            .setContentTitle("📥 Screenshot Received!")
+            .setContentText("Tap to view the received screenshot")
+            .setSmallIcon(R.drawable.ic_notification)
+            .setAutoCancel(true)
+            .setContentIntent(viewPending)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            // Full-screen intent brings it to attention even in background
+            .setFullScreenIntent(viewPending, true)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .build()
+
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE)
+                as android.app.NotificationManager
+        notificationManager.notify(
+            RECEIVED_NOTIFICATION_ID + (System.currentTimeMillis() % 1000).toInt(),
+            notification
+        )
+
+        // 2. Also try to open directly (works if app is in foreground)
+        try {
+            val directIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "image/png")
+                addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            startActivity(directIntent)
+        } catch (e: Exception) {
+            Log.d(TAG, "Direct open failed (app may be in background): ${e.message}")
+        }
     }
 
+    // --- Notification ---
+
     private fun buildNotification(): Notification {
-        val openIntent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
         val openPending = PendingIntent.getActivity(
-            this, 0, openIntent,
+            this, 0,
+            Intent(this, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_SINGLE_TOP },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val stopIntent = Intent(this, GrabDropService::class.java).apply {
-            action = Constants.SERVICE_ACTION_STOP
-        }
         val stopPending = PendingIntent.getService(
-            this, 1, stopIntent,
+            this, 1,
+            Intent(this, GrabDropService::class.java).apply { action = Constants.SERVICE_ACTION_STOP },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -330,7 +413,7 @@ class GrabDropService : Service() {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GrabDrop::ServiceWakeLock")
                 .apply { acquire(60 * 60 * 1000L) }
-        } catch (e: Exception) { Log.e(TAG, "WakeLock error", e) }
+        } catch (_: Exception) {}
     }
 
     private fun releaseWakeLock() {

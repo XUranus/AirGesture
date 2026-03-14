@@ -20,6 +20,9 @@ object ServiceState {
     private val _eventLog = MutableStateFlow<List<String>>(emptyList())
     val eventLog: StateFlow<List<String>> = _eventLog
 
+    private val _debugMode = MutableStateFlow(false)
+    val debugMode: StateFlow<Boolean> = _debugMode
+
     fun setRunning(running: Boolean) {
         _isRunning.value = running
         _statusText.value = if (running) "Monitoring gestures..." else "Idle"
@@ -31,12 +34,18 @@ object ServiceState {
 
     fun addEvent(event: String) {
         _lastEvent.value = event
-        _eventLog.value = (listOf(event) + _eventLog.value).take(200)
+        _eventLog.value = (listOf(event) + _eventLog.value).take(500)
     }
 
     fun setStatus(text: String) {
         _statusText.value = text
     }
+
+    fun setDebugMode(enabled: Boolean) {
+        _debugMode.value = enabled
+    }
+
+    fun isDebug(): Boolean = _debugMode.value
 
     fun reset() {
         _isRunning.value = false
