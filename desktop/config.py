@@ -9,7 +9,6 @@
 #*   Description:  
 #*
 #================================================================*/
-
 # /GrabDrop-Desktop/config.py
 import uuid
 import platform
@@ -32,7 +31,7 @@ DEVICE_TIMEOUT_S = 10
 IDLE_FPS = 10
 IDLE_FRAME_INTERVAL_S = 1.0 / IDLE_FPS
 IDLE_WINDOW_SIZE = 10
-IDLE_TRIGGER_THRESHOLD = 8  # 8 out of 10
+IDLE_TRIGGER_THRESHOLD = 8
 
 # Gesture Detection — Wakeup Stage
 WAKEUP_FPS = 30
@@ -40,11 +39,17 @@ WAKEUP_FRAME_INTERVAL_S = 1.0 / WAKEUP_FPS
 WAKEUP_DURATION_S = 2.0
 WAKEUP_CONFIRM_FRAMES = 8
 
-# Hand Classification Thresholds
+# Hand Classification
 FINGER_EXTENDED_THRESHOLD = 1.3
 FINGER_CURLED_THRESHOLD = 0.9
 MIN_FINGERS_FOR_PALM = 3
 MIN_FINGERS_FOR_FIST = 3
+
+# Swipe Detection
+SWIPE_DISPLACEMENT_THRESHOLD = 0.12
+SWIPE_CONFIRM_FRAMES = 5
+SWIPE_MIN_VELOCITY = 0.008
+SWIPE_COOLDOWN_S = 0.8
 
 # Cooldown
 GRAB_COOLDOWN_S = 3.0
@@ -58,7 +63,6 @@ OVERLAY_FONT_SIZE = 36
 OVERLAY_DURATION_S = 2.0
 
 # Camera
-CAMERA_INDEX = 0  # 0 = default webcam
+CAMERA_INDEX = 0
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
-

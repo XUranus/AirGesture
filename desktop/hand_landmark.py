@@ -9,13 +9,12 @@
 #*   Description:  
 #*
 #================================================================*/
-
 # /GrabDrop-Desktop/hand_landmark.py
 import logging
 import math
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import List
 
 import mediapipe as mp
 import numpy as np
@@ -32,6 +31,9 @@ class HandState(Enum):
     UNKNOWN = "UNKNOWN"
 
 
+FINGER_NAMES = ["IDX", "MID", "RNG", "PNK"]
+
+
 @dataclass
 class DetectionDetail:
     state: HandState
@@ -41,25 +43,27 @@ class DetectionDetail:
     hands_found: int = 0
     confidence: float = 0.0
     handedness: str = "?"
-
-    _FINGER_NAMES = ["IDX", "MID", "RNG", "PNK"]
+    center_x: float = 0.5
+    center_y: float = 0.5
+    wrist_x: float = 0.5
+    wrist_y: float = 0.5
 
     def summary(self) -> str:
         if self.hands_found == 0:
             return "NO_HAND"
         ratios = " ".join(
             f"{n}:{r:.2f}"
-            for n, r in zip(self._FINGER_NAMES, self.finger_ratios)
+            for n, r in zip(FINGER_NAMES, self.finger_ratios)
         )
         return (
             f"{self.state.value} e={self.extended_count} "
             f"c={self.curled_count} conf={self.confidence:.2f} "
+            f"pos=({self.center_x:.2f},{self.center_y:.2f}) "
             f"[{ratios}]"
         )
 
 
 class HandLandmarkDetector:
-    # Landmark indices
     WRIST = 0
     INDEX_MCP, INDEX_PIP, INDEX_TIP = 5, 6, 8
     MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP = 9, 10, 12
@@ -72,7 +76,8 @@ class HandLandmarkDetector:
         (RING_TIP, RING_PIP, RING_MCP),
         (PINKY_TIP, PINKY_PIP, PINKY_MCP),
     ]
-    FINGER_NAMES = ["IDX", "MID", "RNG", "PNK"]
+
+    CENTER_INDICES = [0, 5, 9, 13, 17]  # WRIST + 4 MCPs
 
     def __init__(self):
         self.hands = None
@@ -83,7 +88,7 @@ class HandLandmarkDetector:
                 max_num_hands=1,
                 min_detection_confidence=0.3,
                 min_tracking_confidence=0.3,
-                model_complexity=0,  # 0=lite, 1=full
+                model_complexity=0,
             )
             self.is_initialized = True
             logger.info("MediaPipe Hands initialized (lite model)")
@@ -91,9 +96,6 @@ class HandLandmarkDetector:
             logger.error(f"Failed to initialize MediaPipe: {e}")
 
     def detect(self, frame_rgb: np.ndarray) -> DetectionDetail:
-        """
-        Detect hand state from an RGB frame (numpy array HxWx3).
-        """
         if not self.is_initialized or self.hands is None:
             return DetectionDetail(state=HandState.NONE)
 
@@ -115,7 +117,6 @@ class HandLandmarkDetector:
                 hands_found=len(results.multi_hand_landmarks),
             )
 
-        # Confidence and handedness
         confidence = 0.0
         handedness = "?"
         if results.multi_handedness:
@@ -124,6 +125,10 @@ class HandLandmarkDetector:
             handedness = h.label
 
         wrist = landmarks[self.WRIST]
+
+        # Calculate hand center
+        cx = sum(landmarks[i].x for i in self.CENTER_INDICES) / len(self.CENTER_INDICES)
+        cy = sum(landmarks[i].y for i in self.CENTER_INDICES) / len(self.CENTER_INDICES)
 
         extended = 0
         curled = 0
@@ -163,6 +168,10 @@ class HandLandmarkDetector:
             hands_found=len(results.multi_hand_landmarks),
             confidence=confidence,
             handedness=handedness,
+            center_x=cx,
+            center_y=cy,
+            wrist_x=wrist.x,
+            wrist_y=wrist.y,
         )
 
     @staticmethod
@@ -173,4 +182,3 @@ class HandLandmarkDetector:
         if self.hands:
             self.hands.close()
             logger.info("MediaPipe Hands closed")
-

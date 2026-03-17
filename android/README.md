@@ -234,5 +234,5 @@ SCREENSHOT_OFFER_TIMEOUT_MS = 10_000L
 
 GrabDrop Android is fully compatible with:
 - **GrabDrop Desktop** (Python) — same network protocol
-- Any device implementing the GrabDrop protocol (see `PROTOCOL.md`)
+- Any device implementing the GrabDrop protocol (see `network.md`)
 

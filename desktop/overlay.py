@@ -121,9 +121,9 @@ class OverlayManager:
 
             # Try different fonts for emoji
             emoji_fonts = [
-                ("Noto Color Emoji", 32),
-                ("Segoe UI Emoji", 32),
                 ("Apple Color Emoji", 32),
+                ("Segoe UI Emoji", 32),
+                ("Noto Color Emoji", 32),
                 ("DejaVu Sans", 28),
                 ("TkDefaultFont", 28),
             ]
@@ -139,11 +139,13 @@ class OverlayManager:
                         fg="white",
                     )
                     label.pack()
+                    logger.debug(f"Show indicator succeeded: {emoji} {font_name} {font_size}")
                     break
                 except Exception:
                     continue
 
             if label is None:
+                logger.error(f"Show indicator failed, label is None")
                 label = tk.Label(
                     frame,
                     text=emoji,

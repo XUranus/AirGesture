@@ -1,0 +1,10 @@
+<!-- /GrabDrop/app/src/main/res/values/strings.xml -->
+<resources>
+    <string name="app_name">GrabDrop</string>
+    <string name="notification_channel_name">GrabDrop Service</string>
+    <string name="notification_channel_description">Shows when GrabDrop is actively monitoring gestures</string>
+    <string name="notification_title">GrabDrop is active</string>
+    <string name="notification_text">Monitoring gestures • %d device(s) nearby</string>
+    <string name="stop_service">Stop</string>
+    <string name="accessibility_description">GrabDrop uses accessibility to simulate swipe gestures on screen when you move your hand up or down.</string>
+</resources>

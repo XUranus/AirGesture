@@ -216,12 +216,80 @@ class GrabDropDesktop:
             self._handle_grab()
         elif event == GestureEvent.RELEASE:
             self._handle_release()
+        elif event == GestureEvent.SWIPE_UP:
+            self._handle_swipe("up")
+        elif event == GestureEvent.SWIPE_DOWN:
+            self._handle_swipe("down")
+
+    def _handle_swipe(self, direction: str):
+        arrow = "⬆️" if direction == "up" else "⬇️"
+        self.logger.info(f"{arrow} Swipe {direction.upper()} — simulating scroll")
+
+        try:
+            import subprocess
+            import platform as plat
+            system = plat.system()
+
+            if system == "Linux":
+                # xdotool for X11, ydotool for Wayland
+                # if os.environ.get("WAYLAND_DISPLAY"):
+                #     # Wayland: use ydotool or wtype
+                #     button = "5" if direction == "down" else "4"
+                #     for _ in range(5):
+                #         subprocess.run(
+                #             ["ydotool", "click", button],
+                #             timeout=2, capture_output=True
+                #         )
+                # else:
+                #     # X11: use xdotool
+                #     button = "5" if direction == "down" else "4"
+                #     for _ in range(5):
+                #         subprocess.run(
+                #             ["xdotool", "click", button],
+                #             timeout=2, capture_output=True
+                #         )
+                from evdev import UInput, ecodes as e
+                with UInput() as ui:
+                    time.sleep(0.1)  # small delay to ensure events are processed
+                    ui.write(e.EV_KEY, e.KEY_PAGEDOWN if direction == "down" else e.KEY_PAGEUP, 1)
+                    ui.syn()
+                    ui.write(e.EV_KEY, e.KEY_PAGEDOWN if direction == "down" else e.KEY_PAGEUP, 0)
+                    ui.syn()
+                    time.sleep(0.1)
+            elif system == "Darwin":
+                # macOS: AppleScript or cliclick
+                scroll_amount = -5 if direction == "down" else 5
+                subprocess.run(
+                    ["osascript", "-e",
+                     f'tell application "System Events" to scroll area 1 of process '
+                     f'"Finder" to scroll by {scroll_amount}'],
+                    timeout=2, capture_output=True
+                )
+            elif system == "Windows":
+                try:
+                    import ctypes
+                    MOUSEEVENTF_WHEEL = 0x0800
+                    amount = -120 * 3 if direction == "down" else 120 * 3
+                    ctypes.windll.user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, amount, 0)
+                except Exception as e:
+                    self.logger.error(f"Windows scroll failed: {e}")
+
+            self.logger.info(f"{arrow} Scroll simulated")
+        except FileNotFoundError as e:
+            self.logger.error(
+                f"Scroll tool not found: {e}. "
+                f"Install xdotool (X11) or ydotool (Wayland)"
+            )
+        except Exception as e:
+            self.logger.error(f"Scroll failed: {e}")
+
 
     def _on_stage_change(self, stage: str, indicator: str):
         if stage == "WAKEUP":
             self.overlay.show_wakeup_indicator(indicator)
         else:
             self.overlay.hide_wakeup_indicator()
+
 
     def _handle_grab(self):
         now = time.time()
