@@ -29,6 +29,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
+import kotlin.math.abs
 
 class RealGestureDetector(
     private val context: Context,
@@ -47,11 +48,8 @@ class RealGestureDetector(
 
     enum class Stage { IDLE, WAKEUP }
 
-    @Volatile
-    private var currentStage = Stage.IDLE
-
-    @Volatile
-    private var running = false
+    @Volatile private var currentStage = Stage.IDLE
+    @Volatile private var running = false
 
     private val lifecycleOwner = ServiceLifecycleOwner()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -66,32 +64,39 @@ class RealGestureDetector(
 
     private var handDetector: HandLandmarkDetector? = null
 
+    // Idle
     private val idleWindow = ArrayDeque<HandState>()
+    private var idleFrameCount = 0
 
+    // Wakeup — grab/release
     private var wakeupStartTime = 0L
     private var wakeupTriggerState = HandState.NONE
     private var wakeupTargetState = HandState.NONE
     private var consecutiveTargetFrames = 0
     private var wakeupFrames = mutableListOf<HandState>()
-
-    @Volatile
-    private var lastFrameTime = 0L
-
-    @Volatile
-    private var lastGestureTime = 0L
-
-    private val totalFrameCount = AtomicLong(0)
-    private var idleFrameCount = 0
     private var wakeupFrameCount = 0
+
+    // Wakeup — swipe tracking
+    private var swipeStartY = -1f
+    private var swipePreviousY = -1f
+    private var swipeConsecutiveUp = 0
+    private var swipeConsecutiveDown = 0
+    private var swipeCumulativeDisplacement = 0f
+    private val swipeYHistory = mutableListOf<Float>()
+
+    // Cooldowns
+    @Volatile private var lastFrameTime = 0L
+    @Volatile private var lastGestureTime = 0L
+    @Volatile private var lastSwipeTime = 0L
+
+    // Stats
+    private val totalFrameCount = AtomicLong(0)
     private var cameraFrameCount = AtomicLong(0)
     private var droppedFrameCount = AtomicLong(0)
-
     private var lastDebugFrameTime = 0L
     private var firstFrameLogged = false
 
     private var scope: CoroutineScope? = null
-
-    // Check debug mode from ServiceState
     private val isDebug: Boolean get() = ServiceState.isDebug()
 
     fun start() {
@@ -100,10 +105,7 @@ class RealGestureDetector(
 
         scope = CoroutineScope(
             Dispatchers.Main + SupervisorJob() +
-                    CoroutineExceptionHandler { _, throwable ->
-                        Log.e(TAG, "Coroutine error", throwable)
-                        addLog("⚠️ Gesture detector error: ${throwable.message}")
-                    }
+                    CoroutineExceptionHandler { _, t -> Log.e(TAG, "Coroutine error", t) }
         )
 
         scope?.launch {
@@ -111,15 +113,13 @@ class RealGestureDetector(
                 addLog("🔧 Initializing gesture detector...")
                 handDetector = HandLandmarkDetector(context)
                 if (handDetector?.isInitialized == true) {
-                    addLog("✅ MediaPipe HandLandmarker loaded")
+                    addLog("✅ MediaPipe loaded")
                 } else {
-                    addLog("❌ MediaPipe HandLandmarker FAILED to load")
-                    return@launch
+                    addLog("❌ MediaPipe FAILED"); return@launch
                 }
                 startCamera()
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to start", e)
-                addLog("❌ Gesture detector start failed: ${e.message}")
+                addLog("❌ Start failed: ${e.message}")
             }
         }
 
@@ -127,64 +127,38 @@ class RealGestureDetector(
             delay(5000)
             while (isActive && running) {
                 delay(10_000)
-                val cam = cameraFrameCount.get()
-                val total = totalFrameCount.get()
-                val dropped = droppedFrameCount.get()
                 if (isDebug) {
-                    addLog(
-                        "📊 Stats: cam=$cam proc=$total drop=$dropped stage=$currentStage " +
-                                "img=${actualImageWidth}x${actualImageHeight} rot=$actualRotation sensor=$sensorRotation"
-                    )
+                    addLog("📊 cam=${cameraFrameCount.get()} proc=${totalFrameCount.get()} " +
+                            "drop=${droppedFrameCount.get()} stage=$currentStage")
                 }
             }
         }
     }
 
     fun stop() {
-        Log.d(TAG, "Stopping")
         running = false
-
         mainHandler.post {
-            try {
-                lifecycleOwner.onPause()
-                lifecycleOwner.onStop()
-                lifecycleOwner.onDestroy()
-            } catch (e: Exception) {
-                Log.e(TAG, "Lifecycle stop error", e)
-            }
+            try { lifecycleOwner.onPause(); lifecycleOwner.onStop(); lifecycleOwner.onDestroy() }
+            catch (_: Exception) {}
         }
-
         try { cameraProvider?.unbindAll() } catch (_: Exception) {}
         try { handDetector?.close() } catch (_: Exception) {}
         handDetector = null
-
         overlayManager.hideWakeupIndicator()
-
         analysisExecutor.shutdown()
-        scope?.cancel()
-        scope = null
-
-        addLog("🛑 Gesture detector stopped")
+        scope?.cancel(); scope = null
     }
 
     fun triggerMockRelease(delayMs: Long = 2_500L) {
-        scope?.launch {
-            delay(delayMs)
-            if (running) {
-                Log.d(TAG, ">>> Mock RELEASE triggered")
-                _events.emit(GestureEvent.Release)
-            }
-        }
+        scope?.launch { delay(delayMs); if (running) _events.emit(GestureEvent.Release) }
     }
+
+    // --- Camera ---
 
     private suspend fun startCamera() {
         addLog("📷 Starting front camera...")
-
         val provider = getCameraProvider()
         cameraProvider = provider
-
-        val hasFront = provider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)
-        addLog("📷 Front camera available: $hasFront")
 
         val imageAnalysis = ImageAnalysis.Builder()
             .setTargetResolution(Size(640, 480))
@@ -192,47 +166,33 @@ class RealGestureDetector(
             .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
             .build()
 
-        imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
+        imageAnalysis.setAnalyzer(analysisExecutor) { proxy ->
             cameraFrameCount.incrementAndGet()
-            if (!running) {
-                imageProxy.close()
-                return@setAnalyzer
-            }
-            processFrame(imageProxy)
+            if (!running) { proxy.close(); return@setAnalyzer }
+            processFrame(proxy)
         }
 
         mainHandler.post {
             try {
-                lifecycleOwner.onCreate()
-                lifecycleOwner.onStart()
-                lifecycleOwner.onResume()
-
+                lifecycleOwner.onCreate(); lifecycleOwner.onStart(); lifecycleOwner.onResume()
                 provider.unbindAll()
                 camera = provider.bindToLifecycle(
-                    lifecycleOwner,
-                    CameraSelector.DEFAULT_FRONT_CAMERA,
-                    imageAnalysis
+                    lifecycleOwner, CameraSelector.DEFAULT_FRONT_CAMERA, imageAnalysis
                 )
-
                 sensorRotation = camera?.cameraInfo?.sensorRotationDegrees ?: -1
-                addLog("📷 Camera bound! sensorRotation=$sensorRotation")
-                addLog("👁️ IDLE stage ")
-            } catch (e: Exception) {
-                Log.e(TAG, "Camera bind failed", e)
-                addLog("❌ Camera bind failed: ${e.message}")
-            }
+                addLog("📷 Camera bound! sensor=$sensorRotation")
+                addLog("👁️ IDLE — scanning at ~${Constants.IDLE_FPS}fps (swipe detection enabled)")
+            } catch (e: Exception) { addLog("❌ Camera bind failed: ${e.message}") }
         }
     }
 
-    private suspend fun getCameraProvider(): ProcessCameraProvider {
-        return suspendCoroutine { cont ->
-            val future = ProcessCameraProvider.getInstance(context)
-            future.addListener(
-                { cont.resume(future.get()) },
-                ContextCompat.getMainExecutor(context)
-            )
+    private suspend fun getCameraProvider(): ProcessCameraProvider =
+        suspendCoroutine { cont ->
+            val f = ProcessCameraProvider.getInstance(context)
+            f.addListener({ cont.resume(f.get()) }, ContextCompat.getMainExecutor(context))
         }
-    }
+
+    // --- Frame Processing ---
 
     private fun processFrame(imageProxy: ImageProxy) {
         try {
@@ -241,49 +201,34 @@ class RealGestureDetector(
                 Stage.IDLE -> Constants.IDLE_FRAME_INTERVAL_MS
                 Stage.WAKEUP -> Constants.WAKEUP_FRAME_INTERVAL_MS
             }
-
             if (now - lastFrameTime < minInterval) {
-                droppedFrameCount.incrementAndGet()
-                imageProxy.close()
-                return
+                droppedFrameCount.incrementAndGet(); imageProxy.close(); return
             }
             lastFrameTime = now
             totalFrameCount.incrementAndGet()
 
-            val detector = handDetector
-            if (detector == null) {
-                imageProxy.close()
-                return
-            }
-
-            val rotation = imageProxy.imageInfo.rotationDegrees
-            val width = imageProxy.width
-            val height = imageProxy.height
+            val detector = handDetector ?: run { imageProxy.close(); return }
 
             if (!firstFrameLogged) {
                 firstFrameLogged = true
-                actualImageWidth = width
-                actualImageHeight = height
-                actualRotation = rotation
-
-                val msg = "📷 First frame: ${width}x${height} rot=${rotation}° sensor=$sensorRotation"
-                Log.d(TAG, msg)
-                addLog(msg)
+                actualImageWidth = imageProxy.width
+                actualImageHeight = imageProxy.height
+                actualRotation = imageProxy.imageInfo.rotationDegrees
+                addLog("📷 First frame: ${actualImageWidth}x${actualImageHeight} rot=$actualRotation")
             }
-
-            actualImageWidth = width
-            actualImageHeight = height
-            actualRotation = rotation
 
             val bitmap = imageProxyToBitmap(imageProxy)
             imageProxy.close()
-
             if (bitmap == null) return
 
-            // Save debug frame periodically — only in debug mode
             if (isDebug && now - lastDebugFrameTime > DEBUG_FRAME_INTERVAL_MS) {
                 lastDebugFrameTime = now
-                saveDebugFrame(bitmap, rotation)
+                try {
+                    val copy = bitmap.copy(bitmap.config, false)
+                    MediaStoreHelper.saveBitmap(context, copy, "GrabDrop_DEBUG")
+                    copy.recycle()
+                    addLog("🐛 Debug frame saved")
+                } catch (_: Exception) {}
             }
 
             val detail = detector.detectDetailed(bitmap, now)
@@ -294,8 +239,7 @@ class RealGestureDetector(
                 Stage.WAKEUP -> processWakeup(detail, now)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Frame processing error", e)
-            imageProxy.close()
+            Log.e(TAG, "Frame error", e); imageProxy.close()
         }
     }
 
@@ -303,96 +247,43 @@ class RealGestureDetector(
         return try {
             val planes = imageProxy.planes
             if (planes.isEmpty()) return null
-
             val buffer = planes[0].buffer
-            val width = imageProxy.width
-            val height = imageProxy.height
-            val pixelStride = planes[0].pixelStride
-            val rowStride = planes[0].rowStride
+            val w = imageProxy.width; val h = imageProxy.height
+            val ps = planes[0].pixelStride; val rs = planes[0].rowStride
+            val rp = rs - ps * w
+            val bw = if (rp > 0 && ps > 0) w + rp / ps else w
 
-            val rowPadding = rowStride - pixelStride * width
-            val bitmapWidth = if (rowPadding > 0 && pixelStride > 0) {
-                width + rowPadding / pixelStride
-            } else {
-                width
-            }
+            val raw = Bitmap.createBitmap(bw, h, Bitmap.Config.ARGB_8888)
+            buffer.rewind(); raw.copyPixelsFromBuffer(buffer)
 
-            val rawBitmap = Bitmap.createBitmap(bitmapWidth, height, Bitmap.Config.ARGB_8888)
-            buffer.rewind()
-            rawBitmap.copyPixelsFromBuffer(buffer)
+            val cropped = if (bw != w) {
+                Bitmap.createBitmap(raw, 0, 0, w, h).also { if (it !== raw) raw.recycle() }
+            } else raw
 
-            val croppedBitmap = if (bitmapWidth != width) {
-                Bitmap.createBitmap(rawBitmap, 0, 0, width, height).also {
-                    if (it !== rawBitmap) rawBitmap.recycle()
-                }
-            } else {
-                rawBitmap
-            }
-
-            val rotation = imageProxy.imageInfo.rotationDegrees
+            val rot = imageProxy.imageInfo.rotationDegrees
             val matrix = Matrix().apply {
-                if (rotation != 0) {
-                    postRotate(rotation.toFloat())
-                }
-                val rotatedWidth = if (rotation == 90 || rotation == 270) height else width
-                postScale(-1f, 1f, rotatedWidth / 2f, 0f)
+                if (rot != 0) postRotate(rot.toFloat())
+                val rw = if (rot == 90 || rot == 270) h else w
+                postScale(-1f, 1f, rw / 2f, 0f)
             }
-
-            val transformed = Bitmap.createBitmap(
-                croppedBitmap, 0, 0,
-                croppedBitmap.width, croppedBitmap.height,
-                matrix, true
-            )
-            if (transformed !== croppedBitmap) croppedBitmap.recycle()
-            transformed
-        } catch (e: Exception) {
-            Log.e(TAG, "Bitmap conversion error: ${e.message}", e)
-            null
-        }
+            val result = Bitmap.createBitmap(cropped, 0, 0, cropped.width, cropped.height, matrix, true)
+            if (result !== cropped) cropped.recycle()
+            result
+        } catch (e: Exception) { Log.e(TAG, "Bitmap conv error", e); null }
     }
 
-    private fun saveDebugFrame(bitmap: Bitmap, rotation: Int) {
-        try {
-            val copy = bitmap.copy(bitmap.config, false)
-            val uri = MediaStoreHelper.saveBitmap(
-                context, copy, "GrabDrop_DEBUG_rot${rotation}"
-            )
-            copy.recycle()
-            addLog("🐛 Debug frame saved: ${bitmap.width}x${bitmap.height} → $uri")
-        } catch (e: Exception) {
-            Log.e(TAG, "Debug frame save failed", e)
-        }
-    }
-
-    // --- Stage 1: IDLE ---
+    // --- IDLE ---
 
     private fun processIdle(detail: HandLandmarkDetector.DetectionDetail) {
         idleFrameCount++
-
         idleWindow.addLast(detail.state)
-        while (idleWindow.size > Constants.IDLE_WINDOW_SIZE) {
-            idleWindow.removeFirst()
-        }
+        while (idleWindow.size > Constants.IDLE_WINDOW_SIZE) idleWindow.removeFirst()
 
         if (isDebug && idleFrameCount % IDLE_LOG_INTERVAL_FRAMES == 0) {
-            val windowStr = idleWindow.joinToString("") { state ->
-                when (state) {
-                    HandState.PALM -> "🖐"
-                    HandState.FIST -> "✊"
-                    HandState.UNKNOWN -> "❓"
-                    HandState.NONE -> "·"
-                }
-            }
-            val palmCount = idleWindow.count { it == HandState.PALM }
-            val fistCount = idleWindow.count { it == HandState.FIST }
-            val noneCount = idleWindow.count { it == HandState.NONE }
-            val unknownCount = idleWindow.count { it == HandState.UNKNOWN }
-
-            addLog(
-                "👁️ IDLE #$idleFrameCount | $windowStr | " +
-                        "P=$palmCount F=$fistCount N=$noneCount U=$unknownCount | " +
-                        "det: ${detail.summary()}"
-            )
+            val windowStr = idleWindow.joinToString("") { stateEmoji(it) }
+            val p = idleWindow.count { it == HandState.PALM }
+            val f = idleWindow.count { it == HandState.FIST }
+            addLog("👁️ IDLE #$idleFrameCount | $windowStr | P=$p F=$f | ${detail.summary()}")
         }
 
         if (idleWindow.size < Constants.IDLE_WINDOW_SIZE) return
@@ -401,21 +292,20 @@ class RealGestureDetector(
         val fistCount = idleWindow.count { it == HandState.FIST }
 
         when {
-            palmCount >= Constants.IDLE_TRIGGER_THRESHOLD -> {
-                enterWakeup(triggerState = HandState.PALM, targetState = HandState.FIST)
-            }
-            fistCount >= Constants.IDLE_TRIGGER_THRESHOLD -> {
-                enterWakeup(triggerState = HandState.FIST, targetState = HandState.PALM)
-            }
+            palmCount >= Constants.IDLE_TRIGGER_THRESHOLD ->
+                enterWakeup(HandState.PALM, HandState.FIST)
+            fistCount >= Constants.IDLE_TRIGGER_THRESHOLD ->
+                enterWakeup(HandState.FIST, HandState.PALM)
         }
     }
 
-    // --- Stage 2: WAKEUP ---
+    // --- WAKEUP ---
 
     private fun enterWakeup(triggerState: HandState, targetState: HandState) {
         val now = System.currentTimeMillis()
-        if (now - lastGestureTime < Constants.GRAB_COOLDOWN_MS) {
-            if (isDebug) addLog("⏳ Wakeup suppressed — cooldown active")
+        if (now - lastGestureTime < Constants.GRAB_COOLDOWN_MS &&
+            now - lastSwipeTime < Constants.SWIPE_COOLDOWN_MS) {
+            if (isDebug) addLog("⏳ Wakeup suppressed (cooldown)")
             return
         }
 
@@ -429,13 +319,25 @@ class RealGestureDetector(
         idleWindow.clear()
         idleFrameCount = 0
 
-        val triggerEmoji = if (triggerState == HandState.PALM) "🖐" else "✊"
-        val targetEmoji = if (targetState == HandState.FIST) "✊" else "🖐"
-        val motionName = if (targetState == HandState.FIST) "GRAB" else "RELEASE"
+        // Reset swipe tracking
+        swipeStartY = -1f
+        swipePreviousY = -1f
+        swipeConsecutiveUp = 0
+        swipeConsecutiveDown = 0
+        swipeCumulativeDisplacement = 0f
+        swipeYHistory.clear()
 
-        addLog("🔔 WAKEUP! Detected $triggerEmoji — watching 2s for $triggerEmoji→$targetEmoji ($motionName)")
+        val te = if (triggerState == HandState.PALM) "🖐" else "✊"
+        val tge = if (targetState == HandState.FIST) "✊" else "🖐"
+        val motion = if (targetState == HandState.FIST) "GRAB" else "RELEASE"
 
-        val indicator = if (targetState == HandState.FIST) "✊" else "🤚"
+        addLog("🔔 WAKEUP! $te → $tge ($motion) or ↑↓ swipe")
+
+        val indicator = when (targetState) {
+            HandState.FIST -> "✊"
+            HandState.PALM -> "🤚"
+            else -> "👋"
+        }
         mainHandler.post { overlayManager.showWakeupIndicator(indicator) }
     }
 
@@ -446,61 +348,126 @@ class RealGestureDetector(
         val elapsed = now - wakeupStartTime
         val remaining = Constants.WAKEUP_DURATION_MS - elapsed
 
+        // ─── 1. Check SWIPE first (higher priority, faster response) ───
+        if (detail.handsFound > 0) {
+            val swipeEvent = checkSwipe(detail, now)
+            if (swipeEvent != null) {
+                addLog("✅ ${if (swipeEvent == GestureEvent.SwipeUp) "⬆️ SWIPE UP" else "⬇️ SWIPE DOWN"} CONFIRMED!")
+                lastSwipeTime = System.currentTimeMillis()
+                scope?.launch { _events.emit(swipeEvent) }
+                exitWakeup()
+                return
+            }
+        }
+
+        // ─── 2. Check GRAB/RELEASE ───
         if (detail.state == wakeupTargetState) {
             consecutiveTargetFrames++
         } else {
             consecutiveTargetFrames = 0
         }
 
-        if (isDebug &&
-            (wakeupFrameCount % WAKEUP_LOG_INTERVAL_FRAMES == 0 || consecutiveTargetFrames > 0)
-        ) {
-            val stateEmoji = when (detail.state) {
-                HandState.PALM -> "🖐"
-                HandState.FIST -> "✊"
-                HandState.UNKNOWN -> "❓"
-                HandState.NONE -> "·"
-            }
-            val progressBar = buildProgressBar(consecutiveTargetFrames, Constants.WAKEUP_CONFIRM_FRAMES)
-
-            addLog(
-                "⏱️ WK #$wakeupFrameCount ${"%.1f".format(remaining / 1000.0)}s | " +
-                        "$stateEmoji str=$consecutiveTargetFrames/${Constants.WAKEUP_CONFIRM_FRAMES} " +
-                        "$progressBar | ${detail.summary()}"
-            )
+        if (isDebug && (wakeupFrameCount % WAKEUP_LOG_INTERVAL_FRAMES == 0 || consecutiveTargetFrames > 0)) {
+            val se = stateEmoji(detail.state)
+            val pb = progressBar(consecutiveTargetFrames, Constants.WAKEUP_CONFIRM_FRAMES)
+            val swipeInfo = "dy=${"%.3f".format(swipeCumulativeDisplacement)} " +
+                    "↑=${swipeConsecutiveUp} ↓=${swipeConsecutiveDown}"
+            addLog("⏱️ WK #$wakeupFrameCount ${"%.1f".format(remaining / 1000.0)}s | " +
+                    "$se str=$consecutiveTargetFrames/${Constants.WAKEUP_CONFIRM_FRAMES} $pb | $swipeInfo")
         }
 
+        // Timeout
         if (elapsed > Constants.WAKEUP_DURATION_MS) {
-            if (isDebug) {
-                addLog("⌛ WAKEUP timeout — ${buildWakeupSummary()}")
-            } else {
-                addLog("⌛ WAKEUP timeout — no gesture detected")
-            }
+            if (isDebug) addLog("⌛ Timeout — ${buildWakeupSummary()}")
+            else addLog("⌛ WAKEUP timeout")
             exitWakeup()
             return
         }
 
+        // Confirm grab/release
         if (consecutiveTargetFrames >= Constants.WAKEUP_CONFIRM_FRAMES) {
             val event = when (wakeupTargetState) {
-                HandState.FIST -> {
-                    addLog("✅ ✊ GRAB CONFIRMED! (palm→fist)")
-                    GestureEvent.Grab
-                }
-                HandState.PALM -> {
-                    addLog("✅ 🖐 RELEASE CONFIRMED! (fist→palm)")
-                    GestureEvent.Release
-                }
+                HandState.FIST -> { addLog("✅ ✊ GRAB CONFIRMED!"); GestureEvent.Grab }
+                HandState.PALM -> { addLog("✅ 🖐 RELEASE CONFIRMED!"); GestureEvent.Release }
                 else -> null
             }
-
             if (event != null) {
                 lastGestureTime = System.currentTimeMillis()
                 scope?.launch { _events.emit(event) }
             }
-
             exitWakeup()
         }
     }
+
+    // ─── Swipe Detection ───
+
+    private fun checkSwipe(detail: HandLandmarkDetector.DetectionDetail, now: Long): GestureEvent? {
+        // Use swipe cooldown (shorter than grab cooldown)
+        if (System.currentTimeMillis() - lastSwipeTime < Constants.SWIPE_COOLDOWN_MS) return null
+
+        val currentY = detail.centerY
+        swipeYHistory.add(currentY)
+
+        // Initialize start position
+        if (swipeStartY < 0f) {
+            swipeStartY = currentY
+            swipePreviousY = currentY
+            return null
+        }
+
+        // Calculate frame-to-frame velocity
+        val frameVelocity = currentY - swipePreviousY
+        // Positive velocity = moving down in image coords
+        // For front camera mirrored: Y-axis stays the same (top=0, bottom=1)
+        // So positive velocity = hand moving down on screen
+
+        swipePreviousY = currentY
+
+        // Track cumulative displacement from start
+        swipeCumulativeDisplacement = currentY - swipeStartY
+
+        // Count consecutive directional frames
+        if (frameVelocity < -Constants.SWIPE_MIN_VELOCITY) {
+            // Moving UP
+            swipeConsecutiveUp++
+            swipeConsecutiveDown = 0
+        } else if (frameVelocity > Constants.SWIPE_MIN_VELOCITY) {
+            // Moving DOWN
+            swipeConsecutiveDown++
+            swipeConsecutiveUp = 0
+        } else {
+            // Not enough movement — but don't reset completely
+            // Allow small pauses in motion
+        }
+
+        // Check if swipe is confirmed
+        val totalDisplacement = abs(swipeCumulativeDisplacement)
+        val hasEnoughFrames = swipeConsecutiveUp >= Constants.SWIPE_CONFIRM_FRAMES ||
+                swipeConsecutiveDown >= Constants.SWIPE_CONFIRM_FRAMES
+        val hasEnoughDisplacement = totalDisplacement >= Constants.SWIPE_DISPLACEMENT_THRESHOLD
+
+        // Also check via Y history: overall trend
+        if (swipeYHistory.size >= Constants.SWIPE_CONFIRM_FRAMES) {
+            val recentY = swipeYHistory.takeLast(Constants.SWIPE_CONFIRM_FRAMES)
+            val startAvg = recentY.take(2).average().toFloat()
+            val endAvg = recentY.takeLast(2).average().toFloat()
+            val trendDisplacement = endAvg - startAvg
+
+            if (abs(trendDisplacement) >= Constants.SWIPE_DISPLACEMENT_THRESHOLD) {
+                return if (trendDisplacement < 0) GestureEvent.SwipeUp
+                else GestureEvent.SwipeDown
+            }
+        }
+
+        if (hasEnoughFrames && hasEnoughDisplacement) {
+            return if (swipeCumulativeDisplacement < 0) GestureEvent.SwipeUp
+            else GestureEvent.SwipeDown
+        }
+
+        return null
+    }
+
+    // ─── Wakeup Exit ───
 
     private fun exitWakeup() {
         currentStage = Stage.IDLE
@@ -509,6 +476,7 @@ class RealGestureDetector(
         wakeupFrameCount = 0
         idleWindow.clear()
         idleFrameCount = 0
+        swipeYHistory.clear()
         mainHandler.post { overlayManager.hideWakeupIndicator() }
         addLog("👁️ Back to IDLE")
     }
@@ -517,25 +485,22 @@ class RealGestureDetector(
         val total = wakeupFrames.size
         val p = wakeupFrames.count { it == HandState.PALM }
         val f = wakeupFrames.count { it == HandState.FIST }
-        val n = wakeupFrames.count { it == HandState.NONE }
-        val u = wakeupFrames.count { it == HandState.UNKNOWN }
-        val timeline = wakeupFrames.takeLast(30).joinToString("") { s ->
-            when (s) {
-                HandState.PALM -> "🖐"; HandState.FIST -> "✊"
-                HandState.UNKNOWN -> "❓"; HandState.NONE -> "·"
-            }
-        }
-        return "total=$total 🖐=$p ✊=$f ·=$n ❓=$u | $timeline"
+        val timeline = wakeupFrames.takeLast(30).joinToString("") { stateEmoji(it) }
+        return "total=$total 🖐=$p ✊=$f dy=${"%.3f".format(swipeCumulativeDisplacement)} | $timeline"
     }
 
-    private fun buildProgressBar(current: Int, max: Int): String {
-        val filled = current.coerceAtMost(max)
-        val empty = max - filled
-        return "[" + "█".repeat(filled) + "░".repeat(empty) + "]"
+    private fun stateEmoji(s: HandState) = when (s) {
+        HandState.PALM -> "🖐"; HandState.FIST -> "✊"
+        HandState.UNKNOWN -> "❓"; HandState.NONE -> "·"
     }
 
-    private fun addLog(message: String) {
-        val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-        ServiceState.addEvent("$time $message")
+    private fun progressBar(current: Int, max: Int): String {
+        val f = current.coerceAtMost(max); val e = max - f
+        return "[" + "█".repeat(f) + "░".repeat(e) + "]"
+    }
+
+    private fun addLog(msg: String) {
+        val t = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        ServiceState.addEvent("$t $msg")
     }
 }

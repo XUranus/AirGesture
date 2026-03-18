@@ -27,6 +27,10 @@ import androidx.compose.ui.unit.sp
 import com.grabdrop.service.ServiceState
 import com.grabdrop.ui.theme.*
 
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.view.accessibility.AccessibilityManager
+import com.grabdrop.service.SwipeAccessibilityService
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(

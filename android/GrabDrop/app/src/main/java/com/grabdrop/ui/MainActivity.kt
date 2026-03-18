@@ -2,6 +2,7 @@
 package com.grabdrop.ui
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
@@ -18,10 +19,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.AccessibilityManager
 import androidx.core.content.ContextCompat
 import com.grabdrop.service.GrabDropService
 import com.grabdrop.service.MediaProjectionHolder
 import com.grabdrop.service.ServiceState
+import com.grabdrop.service.SwipeAccessibilityService
 import com.grabdrop.ui.theme.GrabDropTheme
 import com.grabdrop.util.Constants
 
@@ -126,11 +129,8 @@ class MainActivity : ComponentActivity() {
             1 -> {
                 if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
                     == PackageManager.PERMISSION_GRANTED
-                ) {
-                    continuePermissionFlow(step = 2)
-                } else {
-                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                }
+                ) continuePermissionFlow(step = 2)
+                else cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
             }
 
             2 -> {
@@ -138,16 +138,9 @@ class MainActivity : ComponentActivity() {
                     if (ContextCompat.checkSelfPermission(
                             this, Manifest.permission.POST_NOTIFICATIONS
                         ) == PackageManager.PERMISSION_GRANTED
-                    ) {
-                        continuePermissionFlow(step = 3)
-                    } else {
-                        notificationPermissionLauncher.launch(
-                            Manifest.permission.POST_NOTIFICATIONS
-                        )
-                    }
-                } else {
-                    continuePermissionFlow(step = 3)
-                }
+                    ) continuePermissionFlow(step = 3)
+                    else notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else continuePermissionFlow(step = 3)
             }
 
             3 -> {
@@ -163,11 +156,47 @@ class MainActivity : ComponentActivity() {
             }
 
             4 -> {
+                // Check accessibility service for swipe support
+                if (isAccessibilityServiceEnabled()) {
+                    Log.d(TAG, "Accessibility service already enabled")
+                    continuePermissionFlow(step = 5)
+                } else {
+                    // Show dialog explaining why, then open settings
+                    android.app.AlertDialog.Builder(this)
+                        .setTitle("Enable Swipe Gesture")
+                        .setMessage(
+                            "To simulate screen swipes with hand gestures, " +
+                                    "enable GrabDrop in Accessibility settings.\n\n" +
+                                    "This is optional — grab/release gestures work without it."
+                        )
+                        .setPositiveButton("Open Settings") { _, _ ->
+                            startActivity(
+                                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                            )
+                        }
+                        .setNegativeButton("Skip") { _, _ ->
+                            continuePermissionFlow(step = 5)
+                        }
+                        .show()
+                }
+            }
+
+            5 -> {
                 Log.d(TAG, "Requesting MediaProjection")
                 val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE)
                         as MediaProjectionManager
                 mediaProjectionLauncher.launch(mpm.createScreenCaptureIntent())
             }
+        }
+    }
+
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as android.view.accessibility.AccessibilityManager
+        val enabled = am.getEnabledAccessibilityServiceList(
+            AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+        )
+        return enabled.any {
+            it.resolveInfo.serviceInfo.name == SwipeAccessibilityService::class.java.name
         }
     }
 

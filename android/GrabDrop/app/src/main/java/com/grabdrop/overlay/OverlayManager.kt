@@ -558,4 +558,60 @@ class OverlayManager(private val context: Context) {
             stopLooping()
         }
     }
+
+
+
+    fun showSwipeIndicator(isUp: Boolean) {
+        if (!canDrawOverlay()) return
+        handler.post {
+            try {
+                val density = context.resources.displayMetrics.density
+                val arrowView = TextView(context).apply {
+                    text = if (isUp) "⬆️" else "⬇️"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 48f)
+                    gravity = android.view.Gravity.CENTER
+                    alpha = 0.8f
+                    tag = System.currentTimeMillis()
+                }
+
+                val params = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.CENTER
+                }
+
+                addOverlayView(arrowView, params)
+
+                // Animate: slide in direction + fade out
+                val slideDistance = (200 * density).toInt()
+                ValueAnimator.ofFloat(0f, 1f).apply {
+                    duration = 500
+                    addUpdateListener {
+                        val f = it.animatedValue as Float
+                        arrowView.alpha = 0.8f * (1f - f)
+                        arrowView.translationY = if (isUp) -slideDistance * f else slideDistance * f
+                        arrowView.scaleX = 1f + 0.3f * f
+                        arrowView.scaleY = 1f + 0.3f * f
+                    }
+                    addListener(object : AnimatorListenerAdapter() {
+                        override fun onAnimationEnd(animation: Animator) {
+                            removeOverlayView(arrowView)
+                        }
+                    })
+                    start()
+                }
+
+                scheduleForceRemoval(arrowView, 1000)
+            } catch (e: Exception) {
+                Log.e(TAG, "Swipe indicator failed", e)
+            }
+        }
+    }
+
 }

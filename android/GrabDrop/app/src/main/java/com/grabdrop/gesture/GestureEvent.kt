@@ -2,7 +2,8 @@
 package com.grabdrop.gesture
 
 sealed class GestureEvent {
-    data object Grab : GestureEvent()      // palm → fist
-    data object Release : GestureEvent()   // fist → palm
+    data object Grab : GestureEvent()
+    data object Release : GestureEvent()
+    data object SwipeUp : GestureEvent()
+    data object SwipeDown : GestureEvent()
 }
-

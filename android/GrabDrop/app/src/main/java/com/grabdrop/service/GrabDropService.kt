@@ -30,6 +30,8 @@ import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.ConcurrentLinkedDeque
 
+import com.grabdrop.service.SwipeAccessibilityService
+
 class GrabDropService : Service() {
 
     companion object {
@@ -154,6 +156,8 @@ class GrabDropService : Service() {
                     when (event) {
                         is GestureEvent.Grab -> handleGrab()
                         is GestureEvent.Release -> handleRelease()
+                        is GestureEvent.SwipeUp -> handleSwipe(SwipeAccessibilityService.SwipeDirection.UP)
+                        is GestureEvent.SwipeDown -> handleSwipe(SwipeAccessibilityService.SwipeDirection.DOWN)
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error handling gesture", e)
@@ -174,6 +178,27 @@ class GrabDropService : Service() {
                 ServiceState.setNearbyDevices(count)
             }
         }
+    }
+
+
+    private fun handleSwipe(direction: SwipeAccessibilityService.SwipeDirection) {
+        if (!SwipeAccessibilityService.isRunning) {
+            Log.w(TAG, "Swipe requested but AccessibilityService is not running")
+            ServiceState.addEvent(
+                formatTime() + " ⚠️ Swipe ${direction.name} — enable Accessibility Service!"
+            )
+            return
+        }
+
+        val emoji = if (direction == SwipeAccessibilityService.SwipeDirection.UP) "⬆️" else "⬇️"
+        Log.d(TAG, "Performing swipe $direction")
+        ServiceState.addEvent(formatTime() + " $emoji Swipe ${direction.name}")
+
+        try {
+            overlayManager.showSwipeIndicator(direction == SwipeAccessibilityService.SwipeDirection.UP)
+        } catch (_: Exception) {}
+
+        SwipeAccessibilityService.performSwipe(direction)
     }
 
     private fun stopAll() {
