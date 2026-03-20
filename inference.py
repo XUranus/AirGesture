@@ -1,556 +1,579 @@
-#!/usr/bin/env python3
-"""
-inference.py - Gesture Recognition Real-time Inference
-
-Loads a pruned 1D-CNN model, detects hand landmarks via MediaPipe in
-real time, maintains a 30-frame sliding-window buffer and classifies
-the current gesture.
-
-Compatible with both the new MediaPipe Tasks API and the legacy Solutions API.
-
-Usage:
-  python inference.py                          # webcam
-  python inference.py --video path/to/video    # video file
-  python inference.py --eval --data_dir data   # batch evaluation on Test/
-"""
-
 import os
 import sys
+import cv2
 import json
 import time
 import argparse
-import collections
-
-import cv2
 import numpy as np
+from collections import deque, Counter
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 
-# MediaPipe Hand Landmarker model file
 HAND_LANDMARKER_MODEL = "hand_landmarker.task"
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/"
     "hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
 )
 
-# Hand skeleton connectivity for manual drawing (Tasks API)
-HAND_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 4),
-    (0, 5), (5, 6), (6, 7), (7, 8),
-    (0, 9), (9, 10), (10, 11), (11, 12),
-    (0, 13), (13, 14), (14, 15), (15, 16),
-    (0, 17), (17, 18), (18, 19), (19, 20),
-    (5, 9), (9, 13), (13, 17),
+NUM_LANDMARKS = 21
+NUM_COORDS = 3
+RAW_DIM = NUM_LANDMARKS * NUM_COORDS
+WRIST_IDX = 0
+MID_FINGER_IDX = 9
+FINGERTIP_IDS = [4, 8, 12, 16, 20]
+BASE_IDS = [2, 5, 9, 13, 17]
+PAIRS = [
+    (4, 8), (8, 12), (12, 16), (16, 20),
+    (4, 12), (4, 16), (4, 20),
+    (8, 16), (8, 20), (12, 20)
 ]
+N_PAIRS = len(PAIRS)
+FINGER_CHAINS = [
+    [0, 1, 2, 3, 4],
+    [0, 5, 6, 7, 8],
+    [0, 9, 10, 11, 12],
+    [0, 13, 14, 15, 16],
+    [0, 17, 18, 19, 20],
+]
+N_FINGERS = 5
+FEATURE_DIM = RAW_DIM + RAW_DIM + 3 + N_PAIRS + N_FINGERS
 
 
-class GestureCNN1D(nn.Module):
-    """1D-CNN temporal classifier (must match the architecture in train.py)."""
-
-    def __init__(self, feature_dim=63, num_classes=8, dropout=0.3):
-        super().__init__()
-        self.features = nn.Sequential(
-            nn.Conv1d(feature_dim, 64, kernel_size=3, padding=1),
-            nn.BatchNorm1d(64), nn.ReLU(inplace=True), nn.Dropout(dropout),
-            nn.Conv1d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm1d(128), nn.ReLU(inplace=True),
-            nn.MaxPool1d(kernel_size=2), nn.Dropout(dropout),
-            nn.Conv1d(128, 256, kernel_size=3, padding=1),
-            nn.BatchNorm1d(256), nn.ReLU(inplace=True),
-            nn.MaxPool1d(kernel_size=2), nn.Dropout(dropout),
-            nn.Conv1d(256, 512, kernel_size=3, padding=1),
-            nn.BatchNorm1d(512), nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool1d(1),
-        )
-        self.classifier = nn.Sequential(
-            nn.Linear(512, 256), nn.ReLU(inplace=True), nn.Dropout(0.5),
-            nn.Linear(256, 128), nn.ReLU(inplace=True), nn.Dropout(0.5),
-            nn.Linear(128, num_classes),
-        )
-
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        return self.classifier(x)
+def ensure_model_file(path=HAND_LANDMARKER_MODEL):
+    if os.path.exists(path):
+        return path
+    import requests
+    r = requests.get(MODEL_URL, stream=True, timeout=120)
+    r.raise_for_status()
+    with open(path, "wb") as f:
+        for chunk in r.iter_content(8192):
+            f.write(chunk)
+    return path
 
 
-def ensure_model_file(model_path=HAND_LANDMARKER_MODEL):
-    """Download the MediaPipe hand landmarker model if missing."""
-    if os.path.exists(model_path):
-        return model_path
-    print(f"[INFO] Downloading {model_path}...")
+def safe_load_state_dict(path):
     try:
-        import requests
-        resp = requests.get(MODEL_URL, stream=True, timeout=120)
-        resp.raise_for_status()
-        with open(model_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print(f"[INFO] Download complete: {model_path}")
-    except Exception as e:
-        print(f"[ERROR] Download failed: {e}")
-        print(f"[ERROR] Please download manually: {MODEL_URL}")
-        sys.exit(1)
-    return model_path
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location="cpu")
+
+
+def resample_sequence(seq, target_len):
+    seq = np.asarray(seq, dtype=np.float32)
+    if seq.ndim != 2:
+        return np.zeros((target_len, RAW_DIM), dtype=np.float32)
+    n, d = seq.shape
+    if n == 0:
+        return np.zeros((target_len, d), dtype=np.float32)
+    if n == target_len:
+        return seq.copy()
+    x_old = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    x_new = np.linspace(0.0, 1.0, target_len, dtype=np.float32)
+    out = np.zeros((target_len, d), dtype=np.float32)
+    for i in range(d):
+        out[:, i] = np.interp(x_new, x_old, seq[:, i]).astype(np.float32)
+    return out
 
 
 class HandDetector:
-    """Hand landmark detector that auto-selects between the new MediaPipe
-    Tasks API and the legacy Solutions API."""
-
-    def __init__(self, static_mode=False, max_hands=1, min_detection_conf=0.6):
-        import mediapipe as mp
-        self.mp = mp
-        self.api_version = None
-        self.detector = None
-        self.mp_drawing = None
-        self.mp_hands_module = None
-
-        # Try the new Tasks API
+    def __init__(self):
+        self.api = None
         try:
-            from mediapipe.tasks import python as mp_python
-            from mediapipe.tasks.python import vision as mp_vision
-
-            model_path = ensure_model_file(HAND_LANDMARKER_MODEL)
-            base_options = mp_python.BaseOptions(model_asset_path=model_path)
-            options = mp_vision.HandLandmarkerOptions(
-                base_options=base_options,
-                running_mode=mp_vision.RunningMode.IMAGE,
-                num_hands=max_hands,
-                min_hand_detection_confidence=min_detection_conf,
-                min_hand_presence_confidence=min_detection_conf,
+            import mediapipe as mp
+            from mediapipe.tasks import python as mpp
+            from mediapipe.tasks.python import vision as mpv
+            p = ensure_model_file()
+            opts = mpv.HandLandmarkerOptions(
+                base_options=mpp.BaseOptions(model_asset_path=p),
+                num_hands=1,
+                min_hand_detection_confidence=0.5,
+                min_hand_presence_confidence=0.5,
                 min_tracking_confidence=0.5,
             )
-            self.detector = mp_vision.HandLandmarker.create_from_options(options)
-            self.api_version = "tasks"
-            print("[INFO] Using MediaPipe Tasks API (new)")
+            self.detector = mpv.HandLandmarker.create_from_options(opts)
+            self.mp = mp
+            self.api = "tasks"
             return
-        except (ImportError, AttributeError, Exception):
+        except Exception:
             pass
-
-        # Fall back to legacy Solutions API
         try:
+            import mediapipe as mp
             self.detector = mp.solutions.hands.Hands(
-                static_image_mode=static_mode,
-                max_num_hands=max_hands,
-                min_detection_confidence=min_detection_conf,
-                min_tracking_confidence=0.5,
+                static_image_mode=False,
+                max_num_hands=1,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
             )
-            self.mp_drawing = mp.solutions.drawing_utils
-            self.mp_hands_module = mp.solutions.hands
-            self.api_version = "solutions"
-            print("[INFO] Using MediaPipe Solutions API (legacy)")
-            return
-        except (ImportError, AttributeError, Exception):
-            pass
-
-        print("[ERROR] Could not initialise MediaPipe. Try: pip install mediapipe --upgrade")
-        sys.exit(1)
+            self.mp = mp
+            self.api = "solutions"
+        except Exception as e:
+            raise RuntimeError(f"MediaPipe init failed: {e}")
 
     def detect(self, frame_bgr):
-        """Detect hand landmarks in a BGR frame.
-        Returns (landmarks_63d | None, raw_landmarks_for_drawing | None)."""
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-
-        if self.api_version == "tasks":
-            mp_image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb)
-            result = self.detector.detect(mp_image)
-            if result.hand_landmarks and len(result.hand_landmarks) > 0:
-                hand = result.hand_landmarks[0]
-                coords = []
-                for lm in hand:
-                    coords.extend([lm.x, lm.y, lm.z])
-                return np.array(coords, dtype=np.float32), hand
-            return None, None
-
-        results = self.detector.process(rgb)
-        if results.multi_hand_landmarks:
-            hand = results.multi_hand_landmarks[0]
-            coords = []
-            for lm in hand.landmark:
-                coords.extend([lm.x, lm.y, lm.z])
-            return np.array(coords, dtype=np.float32), hand
-        return None, None
-
-    def draw_landmarks(self, frame, raw_landmarks):
-        """Render hand skeleton on the frame."""
-        if raw_landmarks is None:
-            return frame
-        h, w = frame.shape[:2]
-
-        if self.api_version == "tasks":
-            points = []
-            for lm in raw_landmarks:
-                px, py = int(lm.x * w), int(lm.y * h)
-                points.append((px, py))
-                cv2.circle(frame, (px, py), 3, (0, 255, 0), -1)
-            for s, e in HAND_CONNECTIONS:
-                if s < len(points) and e < len(points):
-                    cv2.line(frame, points[s], points[e], (255, 255, 255), 2)
+        if self.api == "tasks":
+            img = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb)
+            res = self.detector.detect(img)
+            if res.hand_landmarks:
+                c = []
+                for lm in res.hand_landmarks[0]:
+                    c.extend([lm.x, lm.y, lm.z])
+                return np.array(c, dtype=np.float32)
         else:
-            if self.mp_drawing and self.mp_hands_module:
-                self.mp_drawing.draw_landmarks(
-                    frame, raw_landmarks,
-                    self.mp_hands_module.HAND_CONNECTIONS,
-                    self.mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2, circle_radius=3),
-                    self.mp_drawing.DrawingSpec(color=(255, 255, 255), thickness=2),
-                )
-        return frame
+            res = self.detector.process(rgb)
+            if res.multi_hand_landmarks:
+                c = []
+                for lm in res.multi_hand_landmarks[0].landmark:
+                    c.extend([lm.x, lm.y, lm.z])
+                return np.array(c, dtype=np.float32)
+        return None
 
     def close(self):
         if hasattr(self.detector, "close"):
             self.detector.close()
 
 
-def load_config(save_dir):
-    """Load the JSON config produced by train.py."""
-    path = os.path.join(save_dir, "config.json")
-    if not os.path.exists(path):
-        print(f"[ERROR] Config not found: {path}")
-        sys.exit(1)
-    with open(path, "r", encoding="utf-8") as f:
-        cfg = json.load(f)
-    cfg["normalize_mean"] = np.array(cfg["normalize_mean"], dtype=np.float32)
-    cfg["normalize_std"] = np.array(cfg["normalize_std"], dtype=np.float32)
-    return cfg
+def compute_features(raw_seq):
+    raw_seq = np.asarray(raw_seq, dtype=np.float32)
+    T = raw_seq.shape[0]
+    lms = raw_seq.reshape(T, NUM_LANDMARKS, NUM_COORDS)
+    wrist = lms[:, WRIST_IDX, :]
+    relative = lms - wrist[:, np.newaxis, :]
+    mid = lms[:, MID_FINGER_IDX, :]
+    palm_size = np.maximum(np.linalg.norm(mid - wrist, axis=-1, keepdims=True), 1e-6)
+    norm_lms = relative / palm_size[:, np.newaxis, :]
+    norm_flat = norm_lms.reshape(T, -1).astype(np.float32)
+    vel = np.zeros_like(norm_flat)
+    if T > 1:
+        vel[1:] = norm_flat[1:] - norm_flat[:-1]
+        vel[0] = vel[1]
+    wrist_vel = np.zeros((T, 3), dtype=np.float32)
+    if T > 1:
+        wrist_vel[1:] = wrist[1:] - wrist[:-1]
+        wrist_vel[0] = wrist_vel[1]
+    dists = np.zeros((T, N_PAIRS), dtype=np.float32)
+    for k, (i, j) in enumerate(PAIRS):
+        dists[:, k] = np.linalg.norm(norm_lms[:, i] - norm_lms[:, j], axis=-1)
+    angles = np.zeros((T, N_FINGERS), dtype=np.float32)
+    for fi, chain in enumerate(FINGER_CHAINS):
+        v1 = lms[:, chain[1]] - lms[:, chain[0]]
+        v2 = lms[:, chain[-1]] - lms[:, chain[1]]
+        n1 = np.linalg.norm(v1, axis=-1, keepdims=True) + 1e-8
+        n2 = np.linalg.norm(v2, axis=-1, keepdims=True) + 1e-8
+        cos_a = np.clip((v1 / n1 * v2 / n2).sum(-1), -1.0, 1.0)
+        angles[:, fi] = np.arccos(cos_a)
+    feat = np.concatenate([norm_flat, vel, wrist_vel, dists, angles], axis=1)
+    return feat.astype(np.float32)
 
 
-def load_model(save_dir, config, device):
-    """Load the trained (and optionally pruned) model weights."""
-    model = GestureCNN1D(
-        feature_dim=config["feature_dim"],
-        num_classes=config["num_classes"],
-        dropout=0.0,
-    ).to(device)
+class CausalConv1d(nn.Module):
+    def __init__(self, in_ch, out_ch, ks, dilation=1):
+        super().__init__()
+        self.pad = (ks - 1) * dilation
+        self.conv = nn.Conv1d(in_ch, out_ch, ks, padding=self.pad, dilation=dilation, bias=False)
 
-    model_path = os.path.join(save_dir, "gesture_cnn1d_pruned.pth")
-    if not os.path.exists(model_path):
-        model_path = os.path.join(save_dir, "gesture_cnn1d_best.pth")
-    if not os.path.exists(model_path):
-        print(f"[ERROR] Model file not found: {model_path}")
-        sys.exit(1)
-
-    state = torch.load(model_path, map_location=device, weights_only=True)
-    model.load_state_dict(state, strict=False)
-    model.eval()
-
-    # Report classifier sparsity
-    tp, zp = 0, 0
-    for name, param in model.named_parameters():
-        if "classifier" in name and "weight" in name:
-            tp += param.nelement()
-            zp += (param == 0).sum().item()
-    if tp > 0:
-        print(f"[INFO] Classifier sparsity: {zp}/{tp} ({zp / tp:.1%})")
-    print(f"[INFO] Model loaded: {model_path}")
-    return model
+    def forward(self, x):
+        o = self.conv(x)
+        if self.pad > 0:
+            o = o[:, :, :-self.pad]
+        return o
 
 
-class FrameBuffer:
-    """Fixed-length FIFO buffer for the sliding-window input."""
+class ResBlock(nn.Module):
+    def __init__(self, ch, ks=3, dilation=1, dropout=0.15):
+        super().__init__()
+        self.net = nn.Sequential(
+            CausalConv1d(ch, ch, ks, dilation),
+            nn.BatchNorm1d(ch),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            CausalConv1d(ch, ch, ks, dilation),
+            nn.BatchNorm1d(ch),
+        )
+        self.act = nn.ReLU(inplace=True)
 
-    def __init__(self, seq_len=30, feature_dim=63):
-        self.seq_len = seq_len
-        self.feature_dim = feature_dim
-        self.buffer = collections.deque(maxlen=seq_len)
-        self.last_valid = np.zeros(feature_dim, dtype=np.float32)
+    def forward(self, x):
+        return self.act(self.net(x) + x)
 
-    def push(self, landmarks):
-        if landmarks is not None:
-            self.last_valid = landmarks.copy()
-            self.buffer.append(landmarks.copy())
+
+class ChannelBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, ks=3, dilation=1, dropout=0.15):
+        super().__init__()
+        self.net = nn.Sequential(
+            CausalConv1d(in_ch, out_ch, ks, dilation),
+            nn.BatchNorm1d(out_ch),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            CausalConv1d(out_ch, out_ch, ks, dilation),
+            nn.BatchNorm1d(out_ch),
+        )
+        self.skip = nn.Sequential(
+            nn.Conv1d(in_ch, out_ch, 1, bias=False),
+            nn.BatchNorm1d(out_ch),
+        )
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        return self.act(self.net(x) + self.skip(x))
+
+
+class GestureTCN(nn.Module):
+    def __init__(self, num_classes=8, feat_dim=FEATURE_DIM, dropout=0.15):
+        super().__init__()
+        self.stem = nn.Sequential(
+            nn.Conv1d(feat_dim, 48, 1, bias=False),
+            nn.BatchNorm1d(48),
+            nn.ReLU(inplace=True),
+        )
+        self.blocks = nn.Sequential(
+            ResBlock(48, 3, 1, dropout),
+            ResBlock(48, 3, 2, dropout),
+            ChannelBlock(48, 64, 3, 4, dropout),
+            ResBlock(64, 3, 1, dropout),
+        )
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.head = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(32, num_classes),
+        )
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.blocks(x)
+        x = self.pool(x).squeeze(-1)
+        return self.head(x)
+
+
+class GestureBuffer:
+    def __init__(self, seq_len, window_seconds=1.0, source_fps=30.0, fill_frames=3):
+        self.seq_len = int(seq_len)
+        self.window_seconds = float(window_seconds)
+        self.source_fps = float(source_fps) if source_fps is not None else 30.0
+        if not np.isfinite(self.source_fps) or self.source_fps < 1.0 or self.source_fps > 240.0:
+            self.source_fps = 30.0
+        self.frame_dt = 1.0 / self.source_fps
+        self.fill_frames = int(fill_frames)
+        self.buf = deque()
+        self.miss = 0
+        self.last = None
+
+    def _sanitize_lm(self, lm):
+        arr = np.asarray(lm, dtype=np.float32).reshape(-1)
+        if arr.size < RAW_DIM:
+            out = np.zeros((RAW_DIM,), dtype=np.float32)
+            out[:arr.size] = arr
+            arr = out
+        elif arr.size > RAW_DIM:
+            arr = arr[:RAW_DIM]
+        return arr.astype(np.float32)
+
+    def _purge(self, current_t):
+        cutoff = float(current_t) - self.window_seconds
+        while self.buf and self.buf[0][0] < cutoff:
+            self.buf.popleft()
+
+    def push(self, lm, current_t):
+        current_t = float(current_t)
+        if lm is not None:
+            arr = self._sanitize_lm(lm)
+            self.miss = 0
+            self.last = arr.copy()
+            self.buf.append((current_t, arr.copy()))
         else:
-            # Repeat last valid frame when no hand is detected
-            self.buffer.append(self.last_valid.copy())
+            self.miss += 1
+            if self.miss <= self.fill_frames and self.last is not None:
+                self.buf.append((current_t, self.last.copy()))
+        self._purge(current_t)
 
-    def is_ready(self):
-        return len(self.buffer) >= self.seq_len
+    def coverage_seconds(self, current_t=None):
+        if current_t is not None:
+            self._purge(current_t)
+        if not self.buf:
+            return 0.0
+        return max(0.0, float(self.buf[-1][0] - self.buf[0][0]) + self.frame_dt)
 
-    def get_sequence(self):
-        if len(self.buffer) < self.seq_len:
-            pad = self.seq_len - len(self.buffer)
-            frames = [np.zeros(self.feature_dim, dtype=np.float32)] * pad + list(self.buffer)
+    def ready(self, current_t=None):
+        if current_t is not None:
+            self._purge(current_t)
+        return len(self.buf) >= 2 and self.coverage_seconds() >= self.window_seconds
+
+    def get(self, current_t):
+        self._purge(current_t)
+        if not self.ready():
+            return None
+        arr = np.stack([x[1] for x in self.buf], axis=0).astype(np.float32)
+        return resample_sequence(arr, self.seq_len)
+
+    def reset(self):
+        self.buf.clear()
+        self.miss = 0
+        self.last = None
+
+    def __len__(self):
+        return len(self.buf)
+
+
+class GesturePredictor:
+    def __init__(self, config_path, model_path, backend="torch", smooth_window=5, window_seconds=1.0, source_fps=30.0, fill_frames=3):
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        self.class_names = cfg["class_names"]
+        self.seq_len = int(cfg["seq_len"])
+        self.feat_dim = int(cfg["feature_dim"])
+        self.mean = np.array(cfg["normalize_mean"], dtype=np.float32)
+        self.std = np.array(cfg["normalize_std"], dtype=np.float32)
+        self.backend = backend
+        self.model = self._load(model_path, len(self.class_names))
+        self.buffer = GestureBuffer(
+            self.seq_len,
+            window_seconds=window_seconds,
+            source_fps=source_fps,
+            fill_frames=fill_frames
+        )
+        self.smooth_win = deque(maxlen=max(int(smooth_window), 1))
+        self.prob_win = deque(maxlen=max(int(smooth_window), 1))
+
+    def _load(self, path, nc):
+        suffix = Path(path).suffix.lower()
+        if self.backend == "onnx" or suffix == ".onnx":
+            import onnxruntime as ort
+            opts = ort.SessionOptions()
+            opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            self.backend = "onnx"
+            return ort.InferenceSession(path, sess_options=opts, providers=["CPUExecutionProvider"])
+        if self.backend == "torchscript" or suffix == ".pt":
+            m = torch.jit.load(path, map_location="cpu")
+            m.eval()
+            self.backend = "torchscript"
+            return m
+        m = GestureTCN(nc, self.feat_dim)
+        m.load_state_dict(safe_load_state_dict(path))
+        m.eval()
+        self.backend = "torch"
+        return m
+
+    def push(self, lm, current_t):
+        self.buffer.push(lm, current_t)
+
+    def push_missing(self, current_t):
+        self.buffer.push(None, current_t)
+
+    def predict(self, threshold=0.5, current_t=0.0):
+        raw = self.buffer.get(current_t)
+        if raw is None:
+            self.smooth_win.clear()
+            self.prob_win.clear()
+            return None, 0.0
+        feat = compute_features(raw)
+        feat = (feat - self.mean) / (self.std + 1e-8)
+        x = feat.T[np.newaxis].astype(np.float32)
+        if self.backend == "onnx":
+            logits = self.model.run(None, {"input": x})[0]
+            logits = np.asarray(logits, dtype=np.float32).reshape(-1)
         else:
-            frames = list(self.buffer)
-        return np.array(frames, dtype=np.float32)
+            with torch.no_grad():
+                logits = self.model(torch.from_numpy(x))
+                logits = logits.detach().cpu().numpy().reshape(-1)
+        logits = logits.astype(np.float32)
+        probs = np.exp(logits - logits.max())
+        probs_sum = float(probs.sum())
+        if probs_sum <= 0 or not np.isfinite(probs_sum):
+            return None, 0.0
+        probs /= probs_sum
+        self.prob_win.append(probs.copy())
+        avg = np.stack(list(self.prob_win), axis=0).mean(0)
+        idx = int(avg.argmax())
+        self.smooth_win.append(idx)
+        si = Counter(self.smooth_win).most_common(1)[0][0]
+        sc = float(avg[si])
+        if sc < threshold:
+            return "unknown", sc
+        return self.class_names[si], sc
 
-    def clear(self):
-        self.buffer.clear()
-        self.last_valid = np.zeros(self.feature_dim, dtype=np.float32)
-
-
-class GestureRecognizer:
-    """Wraps model inference with normalisation and temporal smoothing."""
-
-    def __init__(self, model, config, device, confidence_threshold=0.55, smoothing_window=5):
-        self.model = model
-        self.device = device
-        self.threshold = confidence_threshold
-        self.class_names = config["class_names"]
-        self.mean = config["normalize_mean"]
-        self.std = config["normalize_std"]
-        self.history = collections.deque(maxlen=smoothing_window)
-
-    def predict(self, sequence):
-        """Classify a (seq_len, feature_dim) array.
-        Returns (class_name, confidence, probability_vector)."""
-        normed = (sequence - self.mean) / (self.std + 1e-8)
-        tensor = torch.FloatTensor(normed.T).unsqueeze(0).to(self.device)
-
-        with torch.no_grad():
-            probs = torch.softmax(self.model(tensor), dim=1).cpu().numpy()[0]
-
-        pred_idx = int(np.argmax(probs))
-        confidence = float(probs[pred_idx])
-
-        self.history.append(pred_idx)
-
-        # Majority vote over recent predictions
-        if len(self.history) >= 3:
-            votes = np.bincount(list(self.history), minlength=len(self.class_names))
-            smoothed_idx = int(np.argmax(votes))
-        else:
-            smoothed_idx = pred_idx
-
-        if confidence < self.threshold:
-            return "uncertain", confidence, probs
-
-        return self.class_names[smoothed_idx], confidence, probs
+    def reset(self):
+        self.buffer.reset()
+        self.smooth_win.clear()
+        self.prob_win.clear()
 
 
-def draw_info_panel(frame, gesture, confidence, probs, class_names, fps, buf_ready):
-    """Render a semi-transparent info overlay on the frame."""
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (10, 10), (330, 270), (0, 0, 0), -1)
-    cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
-
-    cv2.putText(frame, "Gesture Recognition", (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-
-    colour = (0, 255, 0) if confidence > 0.7 else (0, 255, 255) if confidence > 0.5 else (0, 0, 255)
-    cv2.putText(frame, f"Result: {gesture}", (20, 75),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, colour, 2)
-    cv2.putText(frame, f"Conf: {confidence:.2%}", (20, 105),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2)
-    cv2.putText(frame, f"FPS: {fps:.1f}", (20, 135),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-
-    status_text = "Ready" if buf_ready else "Buffering..."
-    status_col = (0, 255, 0) if buf_ready else (0, 165, 255)
-    cv2.putText(frame, f"Buffer: {status_text}", (20, 160),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_col, 1)
-
-    # Per-class probability bars
-    if probs is not None:
-        best_i = int(np.argmax(probs))
-        y = 180
-        for i, (cn, p) in enumerate(zip(class_names, probs)):
-            bw = int(p * 150)
-            bc = (0, 200, 0) if i == best_i else (100, 100, 100)
-            cv2.rectangle(frame, (130, y - 8), (130 + bw, y + 2), bc, -1)
-            cv2.putText(frame, cn[:12], (20, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.33, (200, 200, 200), 1)
-            cv2.putText(frame, f"{p:.0%}", (285, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.33, (200, 200, 200), 1)
-            y += 14
-
+def draw_landmarks(frame, lm):
+    if lm is None:
+        return frame
+    h, w = frame.shape[:2]
+    pts = lm.reshape(21, 3)
+    conns = [
+        (0, 1), (1, 2), (2, 3), (3, 4),
+        (0, 5), (5, 6), (6, 7), (7, 8),
+        (0, 9), (9, 10), (10, 11), (11, 12),
+        (0, 13), (13, 14), (14, 15), (15, 16),
+        (0, 17), (17, 18), (18, 19), (19, 20),
+        (5, 9), (9, 13), (13, 17),
+    ]
+    sp = [(int(p[0] * w), int(p[1] * h)) for p in pts]
+    for i, j in conns:
+        cv2.line(frame, sp[i], sp[j], (0, 200, 255), 1, cv2.LINE_AA)
+    for p in sp:
+        cv2.circle(frame, p, 3, (255, 100, 0), -1, cv2.LINE_AA)
     return frame
 
 
-def run_inference(source, save_dir, device):
-    """Main real-time inference loop."""
-    config = load_config(save_dir)
-    model = load_model(save_dir, config, device)
-    recognizer = GestureRecognizer(model, config, device)
+def draw_overlay(frame, gesture, conf, fps, buf_len, covered_sec, window_seconds):
+    h, w = frame.shape[:2]
+    ov = frame.copy()
+    cv2.rectangle(ov, (0, 0), (w, 104), (15, 15, 15), -1)
+    cv2.addWeighted(ov, 0.55, frame, 0.45, 0, frame)
+    ok = gesture and gesture not in ("unknown", None)
+    color = (0, 230, 90) if ok else (120, 120, 120)
+    if gesture is None:
+        label = f"COLLECTING {covered_sec:.1f}/{window_seconds:.1f}s"
+    else:
+        label = gesture.upper()
+    cv2.putText(frame, label, (12, 42), cv2.FONT_HERSHEY_SIMPLEX, 1.05, color, 2, cv2.LINE_AA)
+    if gesture is not None:
+        bm = w - 220
+        bw = int(max(0.0, min(conf, 1.0)) * bm)
+        cv2.rectangle(frame, (12, 58), (12 + bw, 76), color, -1)
+        cv2.rectangle(frame, (12, 58), (12 + bm, 76), (160, 160, 160), 1)
+        cv2.putText(frame, f"{conf:.2f}", (w - 195, 73), cv2.FONT_HERSHEY_SIMPLEX, 0.62, color, 1)
+    fr = max(0.0, min(covered_sec / max(window_seconds, 1e-6), 1.0))
+    fw = int(fr * 140)
+    cv2.rectangle(frame, (12, 84), (152, 92), (70, 70, 70), -1)
+    cv2.rectangle(frame, (12, 84), (12 + fw, 92), (0, 190, 255), -1)
+    cv2.putText(
+        frame,
+        f"win:{covered_sec:.1f}/{window_seconds:.1f}s  n:{buf_len}",
+        (160, 92),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.48,
+        (180, 180, 180),
+        1
+    )
+    cv2.putText(frame, f"FPS {fps:.1f}", (w - 100, 92), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (200, 200, 200), 1)
+    return frame
 
-    hand_detector = HandDetector(static_mode=False, max_hands=1, min_detection_conf=0.6)
-    buffer = FrameBuffer(seq_len=config["seq_len"], feature_dim=config["feature_dim"])
 
-    # Open video source
-    if isinstance(source, int) or (isinstance(source, str) and source.isdigit()):
-        src = int(source) if isinstance(source, str) else source
-        cap = cv2.VideoCapture(src)
+def resolve_source_fps(cap, src):
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if fps is None or not np.isfinite(fps) or fps < 1.0 or fps > 240.0:
+        fps = 30.0
+    return float(fps)
+
+
+def get_stream_time(cap, src, frame_idx, source_fps):
+    if isinstance(src, str):
+        ts = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+        if ts is not None and np.isfinite(ts) and ts > 0:
+            return float(ts)
+    return float(frame_idx) / max(float(source_fps), 1e-6)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="checkpoints_v4/config.json")
+    parser.add_argument("--model", default="checkpoints_v4/gesture_tcn_pruned.pth")
+    parser.add_argument("--backend", default="torch", choices=["torch", "torchscript", "onnx"])
+    parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--video", default=None)
+    parser.add_argument("--threshold", type=float, default=0.50)
+    parser.add_argument("--smooth_window", type=int, default=5)
+    parser.add_argument("--window_seconds", type=float, default=1.0)
+    parser.add_argument("--fill_frames", type=int, default=3)
+    parser.add_argument("--show_landmarks", action="store_true", default=True)
+    args = parser.parse_args()
+
+    if not os.path.exists(args.config):
+        print(f"[ERROR] Config not found: {args.config}")
+        sys.exit(1)
+    if not os.path.exists(args.model):
+        print(f"[ERROR] Model not found: {args.model}")
+        sys.exit(1)
+
+    src = args.video if args.video else args.camera
+    cap = cv2.VideoCapture(src)
+    if not cap.isOpened():
+        print(f"[ERROR] Cannot open: {src}")
+        sys.exit(1)
+
+    if not isinstance(src, str):
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        is_camera = True
-    else:
-        cap = cv2.VideoCapture(source)
-        is_camera = False
+        cap.set(cv2.CAP_PROP_FPS, 30)
 
-    if not cap.isOpened():
-        print(f"[ERROR] Cannot open video source: {source}")
-        return
+    source_fps = resolve_source_fps(cap, src)
 
-    predict_interval = 3
-    frame_count = 0
-    fps = 0.0
-    prev_time = time.time()
+    detector = HandDetector()
+    predictor = GesturePredictor(
+        args.config,
+        args.model,
+        args.backend,
+        smooth_window=args.smooth_window,
+        window_seconds=args.window_seconds,
+        source_fps=source_fps,
+        fill_frames=args.fill_frames
+    )
 
-    cur_gesture = "waiting..."
-    cur_conf = 0.0
-    cur_probs = None
+    print(f"[INFO] Loaded ({predictor.backend}), classes={predictor.class_names}")
+    print(f"[INFO] Using sliding window: last {args.window_seconds:.1f}s, source_fps={source_fps:.2f}")
+    print("[INFO] q=quit, r=reset, l=landmarks toggle")
 
-    print("\n[INFO] Real-time gesture recognition started (press 'q' to quit, 'c' to clear buffer)")
+    show_lm = args.show_landmarks
+    prev = time.time()
+    fps_ema = 30.0
+    frame_idx = 0
 
-    while cap.isOpened():
+    while True:
         ret, frame = cap.read()
         if not ret:
-            if is_camera:
-                continue
             break
 
-        frame_count += 1
-        if is_camera:
-            frame = cv2.flip(frame, 1)
+        current_t = get_stream_time(cap, src, frame_idx, source_fps)
+        lm = detector.detect(frame)
 
-        landmarks, raw_hand = hand_detector.detect(frame)
-        hand_detected = landmarks is not None
+        if lm is not None:
+            predictor.push(lm, current_t)
+            if show_lm:
+                frame = draw_landmarks(frame, lm)
+        else:
+            predictor.push_missing(current_t)
 
-        if raw_hand is not None:
-            frame = hand_detector.draw_landmarks(frame, raw_hand)
+        gesture, conf = predictor.predict(threshold=args.threshold, current_t=current_t)
 
-        buffer.push(landmarks)
-
-        if frame_count % predict_interval == 0 and buffer.is_ready():
-            cur_gesture, cur_conf, cur_probs = recognizer.predict(buffer.get_sequence())
-
-        # FPS calculation
         now = time.time()
-        if now - prev_time >= 1.0:
-            fps = frame_count / (now - prev_time)
-            frame_count = 0
-            prev_time = now
+        fps_ema = 0.9 * fps_ema + 0.1 / max(now - prev, 1e-9)
+        prev = now
 
-        frame = draw_info_panel(
-            frame, cur_gesture, cur_conf, cur_probs,
-            config["class_names"], fps, buffer.is_ready(),
-        )
+        covered_sec = predictor.buffer.coverage_seconds(current_t)
+        buf_len = len(predictor.buffer)
 
-        # Hand detection indicator
-        ic = (0, 255, 0) if hand_detected else (0, 0, 255)
-        cv2.circle(frame, (frame.shape[1] - 30, 30), 12, ic, -1)
-        cv2.putText(
-            frame, "Hand" if hand_detected else "No Hand",
-            (frame.shape[1] - 110, 58),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.4, ic, 1,
+        frame = draw_overlay(
+            frame,
+            gesture,
+            conf,
+            fps_ema,
+            buf_len,
+            covered_sec,
+            predictor.buffer.window_seconds
         )
 
         cv2.imshow("Gesture Recognition", frame)
         key = cv2.waitKey(1) & 0xFF
+
         if key == ord("q"):
             break
-        elif key == ord("c"):
-            buffer.clear()
-            cur_gesture, cur_conf, cur_probs = "waiting...", 0.0, None
-            print("[INFO] Buffer cleared")
+        elif key == ord("r"):
+            predictor.reset()
+        elif key == ord("l"):
+            show_lm = not show_lm
+
+        frame_idx += 1
 
     cap.release()
     cv2.destroyAllWindows()
-    hand_detector.close()
-    print("[INFO] Inference finished")
-
-
-def run_batch_evaluation(data_dir, save_dir, device):
-    """Evaluate the model on every video in the Test/ directory."""
-    from scipy.interpolate import interp1d
-
-    config = load_config(save_dir)
-    model = load_model(save_dir, config, device)
-    recognizer = GestureRecognizer(model, config, device, confidence_threshold=0.0)
-
-    seq_len = config["seq_len"]
-    feature_dim = config["feature_dim"]
-    class_names = config["class_names"]
-
-    detector = HandDetector(static_mode=True, max_hands=1, min_detection_conf=0.5)
-    test_dir = os.path.join(data_dir, "Test")
-    correct, total = 0, 0
-
-    print(f"\n[EVAL] Test directory: {test_dir}")
-
-    for cls_name in class_names:
-        cls_dir = os.path.join(test_dir, cls_name)
-        if not os.path.isdir(cls_dir):
-            continue
-
-        label_idx = class_names.index(cls_name)
-        videos = sorted(
-            f for f in os.listdir(cls_dir)
-            if f.lower().endswith((".mp4", ".avi", ".mov"))
-        )
-
-        cls_correct = 0
-        for vf in videos:
-            cap = cv2.VideoCapture(os.path.join(cls_dir, vf))
-            lm_list = []
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                lm, _ = detector.detect(frame)
-                lm_list.append(lm)
-            cap.release()
-
-            if not lm_list:
-                continue
-
-            n = len(lm_list)
-            valid_ids = [i for i, x in enumerate(lm_list) if x is not None]
-            if not valid_ids:
-                continue
-
-            arr = np.zeros((n, feature_dim), dtype=np.float32)
-            for i in valid_ids:
-                arr[i] = lm_list[i]
-
-            if len(valid_ids) == 1:
-                arr[:] = arr[valid_ids[0]]
-            elif len(valid_ids) > 1:
-                va = np.array([lm_list[i] for i in valid_ids])
-                for d in range(feature_dim):
-                    fn = interp1d(valid_ids, va[:, d], kind="linear", fill_value="extrapolate")
-                    arr[:, d] = fn(np.arange(n))
-
-            # Resample to seq_len
-            x_old = np.linspace(0, 1, n)
-            x_new = np.linspace(0, 1, seq_len)
-            seq = np.zeros((seq_len, feature_dim), dtype=np.float32)
-            for d in range(feature_dim):
-                seq[:, d] = np.interp(x_new, x_old, arr[:, d])
-
-            pred_name, _, _ = recognizer.predict(seq)
-            pred_idx = class_names.index(pred_name) if pred_name in class_names else -1
-
-            total += 1
-            if pred_idx == label_idx:
-                correct += 1
-                cls_correct += 1
-
-        print(f"  {cls_name:>15s}: {cls_correct}/{len(videos)} correct")
-
-    if total > 0:
-        print(f"\nOverall accuracy: {correct}/{total} ({correct / total:.2%})")
-
     detector.close()
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Gesture Recognition Inference")
-    parser.add_argument("--video", type=str, default="0", help="0 for webcam or path to video file")
-    parser.add_argument("--save_dir", type=str, default="checkpoints")
-    parser.add_argument("--eval", action="store_true", help="Batch evaluation mode on Test/")
-    parser.add_argument("--data_dir", type=str, default="data")
-    parser.add_argument("--cpu", action="store_true", help="Force CPU inference")
-    args = parser.parse_args()
-
-    device = torch.device("cpu") if args.cpu else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[INFO] Device: {device}")
-
-    if args.eval:
-        run_batch_evaluation(args.data_dir, args.save_dir, device)
-    else:
-        run_inference(args.video, args.save_dir, device)
 
 
 if __name__ == "__main__":

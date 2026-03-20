@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-"""
-train.py - Gesture Recognition 1D-CNN Training + L1 Pruning Pipeline
-
-Extracts hand landmarks via MediaPipe, trains a 1D-CNN temporal classifier
-on (30, 63) keypoint sequences, and applies L1 unstructured pruning to
-the fully-connected classification head.
-
-Compatible with both the new MediaPipe Tasks API and the legacy Solutions API.
-"""
-
 import os
 import sys
 import json
@@ -17,10 +6,10 @@ import logging
 import argparse
 from pathlib import Path
 from collections import defaultdict
+from copy import deepcopy
 
 import cv2
 import numpy as np
-from scipy.interpolate import interp1d
 from tqdm import tqdm
 
 import torch
@@ -28,36 +17,56 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.utils.prune as prune
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, confusion_matrix
 
-# Global constants
 SEQ_LEN = 30
 NUM_LANDMARKS = 21
 NUM_COORDS = 3
-FEATURE_DIM = NUM_LANDMARKS * NUM_COORDS  # 63
+RAW_DIM = NUM_LANDMARKS * NUM_COORDS
 NUM_CLASSES = 8
 BATCH_SIZE = 32
-EPOCHS = 120
-LR = 1e-3
-WEIGHT_DECAY = 1e-4
-PRUNE_AMOUNT = 0.35
-SLIDING_STRIDE = 10
-MIN_VALID_RATIO = 0.3
+EPOCHS = 300
+LR = 2e-3
+WEIGHT_DECAY = 1e-3
+PRUNE_AMOUNT = 0.20
+MIN_VALID_RATIO = 0.10
+PATIENCE = 40
+CACHE_VERSION = "v6_raw"
+
+WRIST_IDX = 0
+MID_FINGER_IDX = 9
+FINGERTIP_IDS = [4, 8, 12, 16, 20]
+BASE_IDS = [2, 5, 9, 13, 17]
+PAIRS = [
+    (4, 8), (8, 12), (12, 16), (16, 20),
+    (4, 12), (4, 16), (4, 20),
+    (8, 16), (8, 20), (12, 20)
+]
+N_PAIRS = len(PAIRS)
+FINGER_CHAINS = [
+    [0, 1, 2, 3, 4],
+    [0, 5, 6, 7, 8],
+    [0, 9, 10, 11, 12],
+    [0, 13, 14, 15, 16],
+    [0, 17, 18, 19, 20],
+]
+N_FINGERS = 5
+FEATURE_DIM = RAW_DIM + RAW_DIM + 3 + N_PAIRS + N_FINGERS
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 CLASS_NAMES = [
-    "grab",
-    "swipe_up",
-    "swipe_down",
-    "swipe_left",
-    "swipe_right",
-    "finger_heart",
-    "wave",
-    "noise",
+    "grab", "swipe_up", "swipe_down", "swipe_left",
+    "swipe_right", "finger_heart", "wave", "noise",
 ]
+CLASS_TO_IDX = {n: i for i, n in enumerate(CLASS_NAMES)}
+SWIPE_CLASSES = {"swipe_up", "swipe_down", "swipe_left", "swipe_right"}
+LR_SWAP_MAP = {"swipe_left": "swipe_right", "swipe_right": "swipe_left"}
 
-CLASS_TO_IDX = {name: idx for idx, name in enumerate(CLASS_NAMES)}
+HAND_LANDMARKER_MODEL = "hand_landmarker.task"
+MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/"
+    "hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,126 +75,73 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# MediaPipe Hand Landmarker model file
-HAND_LANDMARKER_MODEL = "hand_landmarker.task"
-MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/"
-    "hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
-)
 
-
-def ensure_model_file(model_path=HAND_LANDMARKER_MODEL):
-    """Download hand_landmarker.task if it does not exist locally."""
-    if os.path.exists(model_path):
-        return model_path
-
-    logger.info(f"Model file {model_path} not found. Downloading...")
-    try:
-        import requests
-
-        resp = requests.get(MODEL_URL, stream=True, timeout=120)
-        resp.raise_for_status()
-        total = int(resp.headers.get("content-length", 0))
-        with open(model_path, "wb") as f:
-            downloaded = 0
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
-                downloaded += len(chunk)
-                if total > 0:
-                    pct = downloaded / total * 100
-                    print(f"\r  Download progress: {pct:.1f}% ({downloaded}/{total})", end="")
-        print()
-        logger.info(f"Model file downloaded: {model_path}")
-    except ImportError:
-        logger.error("Please install requests: pip install requests")
-        logger.error(f"Or manually download: {MODEL_URL}")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Download failed: {e}")
-        logger.error(f"Please manually download: {MODEL_URL}")
-        sys.exit(1)
-
-    return model_path
+def ensure_model_file(path=HAND_LANDMARKER_MODEL):
+    if os.path.exists(path):
+        return path
+    logger.info(f"Downloading {path} ...")
+    import requests
+    r = requests.get(MODEL_URL, stream=True, timeout=120)
+    r.raise_for_status()
+    with open(path, "wb") as f:
+        for chunk in r.iter_content(8192):
+            f.write(chunk)
+    return path
 
 
 class HandDetector:
-    """Hand landmark detector compatible with both MediaPipe Tasks API and
-    the legacy Solutions API. Automatically selects the available backend."""
-
-    def __init__(self, static_mode=True, max_hands=1, min_detection_conf=0.5):
-        self.api_version = None
-        self.detector = None
-
-        # Try the new Tasks API first
+    def __init__(self, static_mode=True, max_hands=1, min_conf=0.5):
+        self.api = None
         try:
             import mediapipe as mp
-            from mediapipe.tasks import python as mp_python
-            from mediapipe.tasks.python import vision as mp_vision
-
-            model_path = ensure_model_file(HAND_LANDMARKER_MODEL)
-            base_options = mp_python.BaseOptions(model_asset_path=model_path)
-            options = mp_vision.HandLandmarkerOptions(
-                base_options=base_options,
+            from mediapipe.tasks import python as mpp
+            from mediapipe.tasks.python import vision as mpv
+            p = ensure_model_file()
+            opts = mpv.HandLandmarkerOptions(
+                base_options=mpp.BaseOptions(model_asset_path=p),
                 num_hands=max_hands,
-                min_hand_detection_confidence=min_detection_conf,
-                min_hand_presence_confidence=min_detection_conf,
+                min_hand_detection_confidence=min_conf,
+                min_hand_presence_confidence=min_conf,
                 min_tracking_confidence=0.5,
             )
-            self.detector = mp_vision.HandLandmarker.create_from_options(options)
+            self.detector = mpv.HandLandmarker.create_from_options(opts)
             self.mp = mp
-            self.api_version = "tasks"
-            logger.info("Using MediaPipe Tasks API (new)")
+            self.api = "tasks"
             return
-        except (ImportError, AttributeError, Exception) as e:
-            logger.debug(f"Tasks API unavailable: {e}")
-
-        # Fall back to the legacy Solutions API
+        except Exception:
+            pass
         try:
             import mediapipe as mp
-
-            hands = mp.solutions.hands
-            self.detector = hands.Hands(
+            self.detector = mp.solutions.hands.Hands(
                 static_image_mode=static_mode,
                 max_num_hands=max_hands,
-                min_detection_confidence=min_detection_conf,
+                min_detection_confidence=min_conf,
                 min_tracking_confidence=0.5,
             )
             self.mp = mp
-            self.api_version = "solutions"
-            logger.info("Using MediaPipe Solutions API (legacy)")
+            self.api = "solutions"
             return
-        except (ImportError, AttributeError, Exception) as e:
-            logger.debug(f"Solutions API unavailable: {e}")
-
-        logger.error("Failed to initialise MediaPipe. Try: pip install mediapipe --upgrade")
-        sys.exit(1)
+        except Exception as e:
+            logger.error(f"MediaPipe init failed: {e}")
+            sys.exit(1)
 
     def detect(self, frame_bgr):
-        """Return a (63,) numpy array of hand landmarks or None."""
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        if self.api_version == "tasks":
-            return self._detect_tasks(rgb)
-        return self._detect_solutions(rgb)
-
-    def _detect_tasks(self, rgb):
-        mp_image = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb)
-        result = self.detector.detect(mp_image)
-        if result.hand_landmarks and len(result.hand_landmarks) > 0:
-            hand = result.hand_landmarks[0]
-            coords = []
-            for lm in hand:
-                coords.extend([lm.x, lm.y, lm.z])
-            return np.array(coords, dtype=np.float32)
-        return None
-
-    def _detect_solutions(self, rgb):
-        results = self.detector.process(rgb)
-        if results.multi_hand_landmarks:
-            hand = results.multi_hand_landmarks[0]
-            coords = []
-            for lm in hand.landmark:
-                coords.extend([lm.x, lm.y, lm.z])
-            return np.array(coords, dtype=np.float32)
+        if self.api == "tasks":
+            img = self.mp.Image(image_format=self.mp.ImageFormat.SRGB, data=rgb)
+            res = self.detector.detect(img)
+            if res.hand_landmarks and len(res.hand_landmarks) > 0:
+                c = []
+                for lm in res.hand_landmarks[0]:
+                    c.extend([lm.x, lm.y, lm.z])
+                return np.array(c, dtype=np.float32)
+        else:
+            res = self.detector.process(rgb)
+            if res.multi_hand_landmarks:
+                c = []
+                for lm in res.multi_hand_landmarks[0].landmark:
+                    c.extend([lm.x, lm.y, lm.z])
+                return np.array(c, dtype=np.float32)
         return None
 
     def close(self):
@@ -193,587 +149,943 @@ class HandDetector:
             self.detector.close()
 
 
-def extract_landmarks_from_video(video_path, detector):
-    """Extract per-frame hand landmarks from a video file.
-    Returns (landmarks_list, total_frame_count)."""
+def to_scalar(v, default=None):
+    if v is None:
+        return default
+    if isinstance(v, np.ndarray):
+        if v.shape == ():
+            v = v.item()
+        elif v.size == 1:
+            v = v.reshape(()).item()
+    if isinstance(v, bytes):
+        return v.decode("utf-8")
+    return v
+
+
+def resample(seq, target=SEQ_LEN):
+    seq = np.asarray(seq, dtype=np.float32)
+    if seq.ndim != 2:
+        return np.zeros((target, RAW_DIM), dtype=np.float32)
+    n, d = seq.shape
+    if n == 0:
+        return np.zeros((target, d), dtype=np.float32)
+    if n == target:
+        return seq.copy()
+    x_old = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    x_new = np.linspace(0.0, 1.0, target, dtype=np.float32)
+    out = np.zeros((target, d), dtype=np.float32)
+    for i in range(d):
+        out[:, i] = np.interp(x_new, x_old, seq[:, i]).astype(np.float32)
+    return out
+
+
+def to_raw_sequence(seq, target_len=None):
+    try:
+        arr = np.asarray(seq, dtype=np.float32)
+    except Exception:
+        return None
+    if arr.size == 0:
+        t = 0 if target_len is None else target_len
+        return np.zeros((t, RAW_DIM), dtype=np.float32)
+    if arr.ndim == 3 and arr.shape[1] == NUM_LANDMARKS and arr.shape[2] == NUM_COORDS:
+        arr = arr.reshape(arr.shape[0], RAW_DIM)
+    elif arr.ndim == 2 and arr.shape == (NUM_LANDMARKS, NUM_COORDS):
+        arr = arr.reshape(1, RAW_DIM)
+    elif arr.ndim == 2 and arr.shape[1] == RAW_DIM:
+        pass
+    elif arr.ndim == 2 and arr.shape[0] == RAW_DIM and arr.shape[1] != RAW_DIM:
+        arr = arr.T
+        if arr.shape[1] != RAW_DIM:
+            return None
+    elif arr.ndim == 1 and arr.size % RAW_DIM == 0:
+        arr = arr.reshape(-1, RAW_DIM)
+    else:
+        return None
+    arr = np.ascontiguousarray(arr, dtype=np.float32)
+    if target_len is not None and arr.shape[0] != target_len:
+        arr = resample(arr, target_len)
+    return arr
+
+
+def interp_extrap_1d(valid_idx, valid_vals, n):
+    xi = np.arange(n, dtype=np.float32)
+    xp = np.asarray(valid_idx, dtype=np.float32)
+    fp = np.asarray(valid_vals, dtype=np.float32)
+    yi = np.interp(xi, xp, fp).astype(np.float32)
+    if len(valid_idx) >= 2:
+        left = xi < valid_idx[0]
+        if left.any():
+            dx = float(valid_idx[1] - valid_idx[0])
+            slope = 0.0 if dx == 0 else float((fp[1] - fp[0]) / dx)
+            yi[left] = fp[0] + (xi[left] - valid_idx[0]) * slope
+        right = xi > valid_idx[-1]
+        if right.any():
+            dx = float(valid_idx[-1] - valid_idx[-2])
+            slope = 0.0 if dx == 0 else float((fp[-1] - fp[-2]) / dx)
+            yi[right] = fp[-1] + (xi[right] - valid_idx[-1]) * slope
+    return yi.astype(np.float32)
+
+
+def compute_features(raw_seq):
+    raw_seq = to_raw_sequence(raw_seq)
+    if raw_seq is None:
+        shape = np.asarray(raw_seq).shape if raw_seq is not None else None
+        raise ValueError(f"Invalid raw sequence shape: {shape}")
+    T = raw_seq.shape[0]
+    if T == 0:
+        return np.zeros((0, FEATURE_DIM), dtype=np.float32)
+    lms = raw_seq.reshape(T, NUM_LANDMARKS, NUM_COORDS)
+    wrist = lms[:, WRIST_IDX, :]
+    relative = lms - wrist[:, np.newaxis, :]
+    mid = lms[:, MID_FINGER_IDX, :]
+    palm_size = np.maximum(np.linalg.norm(mid - wrist, axis=-1, keepdims=True), 1e-6)
+    norm_lms = relative / palm_size[:, np.newaxis, :]
+    norm_flat = norm_lms.reshape(T, -1).astype(np.float32)
+    vel = np.zeros_like(norm_flat)
+    if T > 1:
+        vel[1:] = norm_flat[1:] - norm_flat[:-1]
+        vel[0] = vel[1]
+    wrist_vel = np.zeros((T, 3), dtype=np.float32)
+    if T > 1:
+        wrist_vel[1:] = wrist[1:] - wrist[:-1]
+        wrist_vel[0] = wrist_vel[1]
+    dists = np.zeros((T, N_PAIRS), dtype=np.float32)
+    for k, (i, j) in enumerate(PAIRS):
+        dists[:, k] = np.linalg.norm(norm_lms[:, i] - norm_lms[:, j], axis=-1)
+    angles = np.zeros((T, N_FINGERS), dtype=np.float32)
+    for fi, chain in enumerate(FINGER_CHAINS):
+        v1 = lms[:, chain[1]] - lms[:, chain[0]]
+        v2 = lms[:, chain[-1]] - lms[:, chain[1]]
+        n1 = np.linalg.norm(v1, axis=-1, keepdims=True) + 1e-8
+        n2 = np.linalg.norm(v2, axis=-1, keepdims=True) + 1e-8
+        cos_a = np.clip((v1 / n1 * v2 / n2).sum(-1), -1.0, 1.0)
+        angles[:, fi] = np.arccos(cos_a)
+    feat = np.concatenate([norm_flat, vel, wrist_vel, dists, angles], axis=1)
+    return feat.astype(np.float32)
+
+
+def check_feature_dim():
+    dummy = np.random.randn(SEQ_LEN, RAW_DIM).astype(np.float32)
+    f = compute_features(dummy)
+    actual = f.shape[1]
+    if actual != FEATURE_DIM:
+        logger.error(f"FEATURE_DIM mismatch: code says {FEATURE_DIM}, actual {actual}")
+        sys.exit(1)
+    logger.info(f"Feature dim verified: {actual}")
+
+
+def interpolate_missing(lm_list):
+    n = len(lm_list)
+    if n == 0:
+        return np.zeros((0, RAW_DIM), dtype=np.float32)
+    valid_idx = [i for i, lm in enumerate(lm_list) if lm is not None]
+    if len(valid_idx) == 0:
+        return np.zeros((n, RAW_DIM), dtype=np.float32)
+    result = np.zeros((n, RAW_DIM), dtype=np.float32)
+    valid_arr = []
+    for i in valid_idx:
+        lm = np.asarray(lm_list[i], dtype=np.float32).reshape(-1)
+        if lm.size < RAW_DIM:
+            pad = np.zeros((RAW_DIM,), dtype=np.float32)
+            pad[:lm.size] = lm
+            lm = pad
+        elif lm.size > RAW_DIM:
+            lm = lm[:RAW_DIM]
+        valid_arr.append(lm.astype(np.float32))
+        result[i] = lm.astype(np.float32)
+    valid_arr = np.stack(valid_arr, axis=0)
+    if len(valid_idx) == 1:
+        result[:] = valid_arr[0]
+        return result
+    for d in range(RAW_DIM):
+        result[:, d] = interp_extrap_1d(valid_idx, valid_arr[:, d], n)
+    return result.astype(np.float32)
+
+
+def mirror_x(raw_seq):
+    raw = to_raw_sequence(raw_seq)
+    if raw is None:
+        raise ValueError("Invalid raw sequence for mirror_x")
+    s = raw.copy().reshape(-1, NUM_LANDMARKS, NUM_COORDS)
+    s[:, :, 0] = 1.0 - s[:, :, 0]
+    return s.reshape(-1, RAW_DIM).astype(np.float32)
+
+
+def rotate_2d(raw_seq, angle_deg):
+    raw = to_raw_sequence(raw_seq)
+    if raw is None:
+        raise ValueError("Invalid raw sequence for rotate_2d")
+    s = raw.copy().reshape(-1, NUM_LANDMARKS, NUM_COORDS)
+    wrist = s[:, WRIST_IDX:WRIST_IDX + 1, :2].copy()
+    s[:, :, :2] -= wrist
+    a = np.radians(angle_deg)
+    c, sn = np.cos(a), np.sin(a)
+    x = s[:, :, 0].copy()
+    y = s[:, :, 1].copy()
+    s[:, :, 0] = c * x - sn * y
+    s[:, :, 1] = sn * x + c * y
+    s[:, :, :2] += wrist
+    return s.reshape(-1, RAW_DIM).astype(np.float32)
+
+
+def scale_landmarks(raw_seq, factor):
+    raw = to_raw_sequence(raw_seq)
+    if raw is None:
+        raise ValueError("Invalid raw sequence for scale_landmarks")
+    s = raw.copy().reshape(-1, NUM_LANDMARKS, NUM_COORDS)
+    wrist = s[:, WRIST_IDX:WRIST_IDX + 1, :].copy()
+    s -= wrist
+    s *= factor
+    s += wrist
+    return s.reshape(-1, RAW_DIM).astype(np.float32)
+
+
+def add_jitter(raw_seq, sigma=0.003):
+    raw = to_raw_sequence(raw_seq)
+    if raw is None:
+        raise ValueError("Invalid raw sequence for add_jitter")
+    noise = np.random.randn(*raw.shape).astype(np.float32) * sigma
+    return (raw + noise).astype(np.float32)
+
+
+def time_warp(raw_seq):
+    raw = to_raw_sequence(raw_seq)
+    if raw is None:
+        raise ValueError("Invalid raw sequence for time_warp")
+    n = len(raw)
+    if n < 4:
+        return raw.copy()
+    anchor = np.random.uniform(0.3, 0.7)
+    warp = np.random.uniform(0.8, 1.2)
+    x = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    x_new = np.where(
+        x < anchor,
+        x * warp,
+        anchor * warp + (x - anchor) * (1.0 - anchor * warp) / (1.0 - anchor + 1e-8)
+    )
+    x_new = np.clip(x_new, 0.0, 1.0)
+    out = np.zeros_like(raw)
+    x_target = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    for d in range(raw.shape[1]):
+        out[:, d] = np.interp(x_target, x_new, raw[:, d]).astype(np.float32)
+    return out.astype(np.float32)
+
+
+def speed_change(raw_seq):
+    raw = to_raw_sequence(raw_seq)
+    if raw is None:
+        raise ValueError("Invalid raw sequence for speed_change")
+    n = len(raw)
+    factor = np.random.uniform(0.8, 1.2)
+    new_n = max(int(n * factor), SEQ_LEN // 2)
+    x_old = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    x_new = np.linspace(0.0, 1.0, new_n, dtype=np.float32)
+    out = np.zeros((new_n, raw.shape[1]), dtype=np.float32)
+    for d in range(raw.shape[1]):
+        out[:, d] = np.interp(x_new, x_old, raw[:, d]).astype(np.float32)
+    return out.astype(np.float32)
+
+
+def extract_video(video_path, detector):
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        logger.warning(f"Cannot open video: {video_path}")
         return [], 0
-
-    landmarks = []
-    total_frames = 0
+    lms = []
+    total = 0
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        total_frames += 1
-        landmarks.append(detector.detect(frame))
+        total += 1
+        lms.append(detector.detect(frame))
     cap.release()
-    return landmarks, total_frames
+    return lms, total
 
 
-def interpolate_missing(landmarks_list):
-    """Fill missing frames with linear interpolation across the feature dims."""
-    n = len(landmarks_list)
-    if n == 0:
-        return np.zeros((0, FEATURE_DIM), dtype=np.float32)
-
-    valid_indices = [i for i, lm in enumerate(landmarks_list) if lm is not None]
-    if len(valid_indices) == 0:
-        return np.zeros((n, FEATURE_DIM), dtype=np.float32)
-
-    result = np.zeros((n, FEATURE_DIM), dtype=np.float32)
-    for i in valid_indices:
-        result[i] = landmarks_list[i]
-
-    if len(valid_indices) == 1:
-        result[:] = result[valid_indices[0]]
-        return result
-
-    valid_arr = np.array([landmarks_list[i] for i in valid_indices])
-    for dim in range(FEATURE_DIM):
-        fn = interp1d(valid_indices, valid_arr[:, dim], kind="linear", fill_value="extrapolate")
-        result[:, dim] = fn(np.arange(n))
-    return result
-
-
-def resample_sequence(seq, target_len=SEQ_LEN):
-    """Resample a variable-length sequence to exactly *target_len* frames."""
-    n = len(seq)
-    if n == 0:
-        return np.zeros((target_len, FEATURE_DIM), dtype=np.float32)
-    if n == target_len:
-        return seq.copy()
-
-    x_old = np.linspace(0, 1, n)
-    x_new = np.linspace(0, 1, target_len)
-    resampled = np.zeros((target_len, FEATURE_DIM), dtype=np.float32)
-    for dim in range(FEATURE_DIM):
-        resampled[:, dim] = np.interp(x_new, x_old, seq[:, dim])
-    return resampled
-
-
-def generate_samples_from_video(landmarks_list, total_frames):
-    """Generate fixed-length training samples from one video using
-    global resampling, sliding window and random cropping."""
-    valid_count = sum(1 for lm in landmarks_list if lm is not None)
-    if total_frames == 0 or valid_count / total_frames < MIN_VALID_RATIO:
-        return []
-
-    seq = interpolate_missing(landmarks_list)
+def make_samples(lm_list, total_frames, class_name, is_train):
+    valid = sum(1 for lm in lm_list if lm is not None)
+    if total_frames == 0 or valid / total_frames < MIN_VALID_RATIO:
+        return [], []
+    raw = interpolate_missing(lm_list)
+    n = len(raw)
+    label = CLASS_TO_IDX[class_name]
     samples = []
-    n = len(seq)
+    labels = []
 
-    # Strategy 1: resample the whole video to SEQ_LEN frames
-    samples.append(resample_sequence(seq, SEQ_LEN))
+    base = resample(raw, SEQ_LEN)
+    samples.append(base.astype(np.float32))
+    labels.append(label)
 
-    # Strategy 2: sliding window
-    if n >= SEQ_LEN:
-        for start in range(0, n - SEQ_LEN + 1, SLIDING_STRIDE):
-            samples.append(seq[start : start + SEQ_LEN].copy())
-
-    # Strategy 3: random crops
-    if n > SEQ_LEN:
-        for _ in range(2):
-            start = random.randint(0, n - SEQ_LEN)
-            samples.append(seq[start : start + SEQ_LEN].copy())
-
-    return samples
-
-
-class GestureAugmentor:
-    """Online data augmentation applied to (SEQ_LEN, 63) keypoint sequences."""
-
-    def __init__(self, p=0.5):
-        self.p = p
-
-    def __call__(self, seq):
-        seq = seq.copy()
-        if random.random() < self.p:
-            seq = self.add_noise(seq)
-        if random.random() < self.p:
-            seq = self.random_scale(seq)
-        if random.random() < self.p:
-            seq = self.random_rotation(seq)
-        if random.random() < self.p:
-            seq = self.random_shift(seq)
-        if random.random() < self.p:
-            seq = self.time_warp(seq)
-        if random.random() < self.p * 0.6:
-            seq = self.spatial_flip(seq)
-        if random.random() < self.p * 0.4:
-            seq = self.random_mask(seq)
-        if random.random() < self.p * 0.5:
-            seq = self.frame_dropout(seq)
-        return seq
-
-    @staticmethod
-    def add_noise(seq, sigma=0.005):
-        return seq + np.random.randn(*seq.shape).astype(np.float32) * sigma
-
-    @staticmethod
-    def random_scale(seq, low=0.85, high=1.15):
-        return seq * np.random.uniform(low, high)
-
-    @staticmethod
-    def random_rotation(seq, max_angle=15):
-        angle = np.radians(np.random.uniform(-max_angle, max_angle))
-        cos_a, sin_a = np.cos(angle), np.sin(angle)
-        rotated = seq.copy()
-        for i in range(NUM_LANDMARKS):
-            xi, yi = i * 3, i * 3 + 1
-            x, y = seq[:, xi], seq[:, yi]
-            rotated[:, xi] = x * cos_a - y * sin_a
-            rotated[:, yi] = x * sin_a + y * cos_a
-        return rotated
-
-    @staticmethod
-    def random_shift(seq, max_shift=0.05):
-        sx = np.random.uniform(-max_shift, max_shift)
-        sy = np.random.uniform(-max_shift, max_shift)
-        sz = np.random.uniform(-max_shift * 0.5, max_shift * 0.5)
-        shifted = seq.copy()
-        for i in range(NUM_LANDMARKS):
-            shifted[:, i * 3] += sx
-            shifted[:, i * 3 + 1] += sy
-            shifted[:, i * 3 + 2] += sz
-        return shifted
-
-    @staticmethod
-    def time_warp(seq, sigma=0.2):
-        n = len(seq)
-        warp_pts = np.sort(np.random.uniform(0, 1, 4))
-        src = np.array([0, *warp_pts, 1])
-        jitter = np.clip(np.random.randn(4) * sigma, -0.4, 0.4)
-        dst = np.sort(np.clip(np.array([0, *(warp_pts + jitter * 0.1), 1]), 0, 1))
-        mapping = interp1d(src, dst, kind="linear", fill_value="extrapolate")
-        x_old = np.linspace(0, 1, n)
-        x_new = np.clip(mapping(x_old), 0, 1)
-        warped = np.zeros_like(seq)
-        for dim in range(seq.shape[1]):
-            warped[:, dim] = np.interp(np.linspace(0, 1, n), x_new, seq[:, dim])
-        return warped
-
-    @staticmethod
-    def spatial_flip(seq):
-        flipped = seq.copy()
-        for i in range(NUM_LANDMARKS):
-            flipped[:, i * 3] = 1.0 - flipped[:, i * 3]
-        return flipped
-
-    @staticmethod
-    def random_mask(seq, max_landmarks=5):
-        masked = seq.copy()
-        n_mask = random.randint(1, max_landmarks)
-        for lid in random.sample(range(NUM_LANDMARKS), n_mask):
-            masked[:, lid * 3 : lid * 3 + 3] = 0
-        return masked
-
-    @staticmethod
-    def frame_dropout(seq, max_drop_ratio=0.2):
-        n = len(seq)
-        n_drop = max(1, int(n * random.uniform(0.05, max_drop_ratio)))
-        drop_ids = sorted(random.sample(range(1, n - 1), min(n_drop, n - 2)))
-        result = seq.copy()
-        for idx in drop_ids:
-            result[idx] = (result[idx - 1] + result[idx + 1]) / 2.0
-        return result
-
-
-class GestureDataset(Dataset):
-    """PyTorch dataset wrapping pre-extracted keypoint sequences."""
-
-    def __init__(self, samples, labels, augmentor=None, normalize_stats=None):
-        self.samples = samples
-        self.labels = labels
-        self.augmentor = augmentor
-        self.mean = normalize_stats["mean"] if normalize_stats else None
-        self.std = normalize_stats["std"] if normalize_stats else None
-
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        seq = self.samples[idx].copy()
-        label = self.labels[idx]
-
-        if self.augmentor is not None:
-            seq = self.augmentor(seq)
-
-        if self.mean is not None and self.std is not None:
-            seq = (seq - self.mean) / (self.std + 1e-8)
-
-        # Transpose to (channels=63, length=30) for Conv1d
-        seq = seq.T
-        return torch.FloatTensor(seq), torch.LongTensor([label]).squeeze()
-
-
-class GestureCNN1D(nn.Module):
-    """1D-CNN temporal classifier.
-    Input shape : (batch, 63, 30)
-    Output shape: (batch, num_classes)
-    """
-
-    def __init__(self, num_classes=NUM_CLASSES, dropout=0.3):
-        super().__init__()
-
-        self.features = nn.Sequential(
-            # Block 1
-            nn.Conv1d(FEATURE_DIM, 64, kernel_size=3, padding=1),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            # Block 2
-            nn.Conv1d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm1d(128),
-            nn.ReLU(inplace=True),
-            nn.MaxPool1d(kernel_size=2),
-            nn.Dropout(dropout),
-            # Block 3
-            nn.Conv1d(128, 256, kernel_size=3, padding=1),
-            nn.BatchNorm1d(256),
-            nn.ReLU(inplace=True),
-            nn.MaxPool1d(kernel_size=2),
-            nn.Dropout(dropout),
-            # Block 4
-            nn.Conv1d(256, 512, kernel_size=3, padding=1),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool1d(1),
-        )
-
-        # Classification head (target of L1 pruning)
-        self.classifier = nn.Sequential(
-            nn.Linear(512, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(256, 128),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(128, num_classes),
-        )
-
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        x = self.classifier(x)
-        return x
-
-
-def load_dataset(data_dir, detector, cache_path=None):
-    """Walk the class sub-directories, extract landmarks from every video
-    and produce fixed-length samples."""
-    if cache_path and os.path.exists(cache_path):
-        logger.info(f"Loading cached data: {cache_path}")
-        cache = np.load(cache_path, allow_pickle=True)
-        raw_samples = cache["samples"]
-        raw_labels = cache["labels"]
-        # Ensure every sample is a proper float32 array
-        samples = [np.array(s, dtype=np.float32) for s in raw_samples]
-        labels = [int(l) for l in raw_labels]
+    if not is_train:
         return samples, labels
 
-    samples, labels = [], []
-    class_counts = defaultdict(int)
-    data_path = Path(data_dir)
+    if n > SEQ_LEN:
+        for start_r in [0.0, 0.15, 0.25]:
+            for end_r in [0.75, 0.85, 1.0]:
+                s = int(n * start_r)
+                e = int(n * end_r)
+                if e - s >= SEQ_LEN // 2:
+                    sub = resample(raw[s:e], SEQ_LEN)
+                    samples.append(sub.astype(np.float32))
+                    labels.append(label)
 
-    for class_name in CLASS_NAMES:
-        class_dir = data_path / class_name
-        if not class_dir.exists():
-            logger.warning(f"Class directory not found: {class_dir}")
-            continue
+    for _ in range(3):
+        aug = add_jitter(raw.copy())
+        aug = resample(aug, SEQ_LEN)
+        samples.append(aug.astype(np.float32))
+        labels.append(label)
 
-        label_idx = CLASS_TO_IDX[class_name]
-        video_files = sorted(
-            f for f in class_dir.iterdir()
-            if f.suffix.lower() in (".mp4", ".avi", ".mov", ".mkv")
-        )
-        logger.info(f"  Class [{class_name}]: found {len(video_files)} videos")
+    for angle in [-15, -10, -5, 5, 10, 15]:
+        rot = rotate_2d(raw.copy(), angle)
+        rot = resample(rot, SEQ_LEN)
+        samples.append(rot.astype(np.float32))
+        labels.append(label)
 
-        for vf in tqdm(video_files, desc=f"  {class_name}", leave=False):
-            landmarks_list, total_frames = extract_landmarks_from_video(vf, detector)
-            if total_frames == 0:
-                continue
-            for s in generate_samples_from_video(landmarks_list, total_frames):
-                samples.append(s.astype(np.float32))
-                labels.append(label_idx)
-                class_counts[class_name] += 1
+    for sc in [0.85, 0.9, 1.1, 1.15]:
+        scaled = scale_landmarks(raw.copy(), sc)
+        scaled = resample(scaled, SEQ_LEN)
+        samples.append(scaled.astype(np.float32))
+        labels.append(label)
 
-    logger.info(f"Dataset statistics ({data_dir}):")
-    for cn in CLASS_NAMES:
-        logger.info(f"  {cn:>15s}: {class_counts[cn]:>5d} samples")
-    logger.info(f"  {'Total':>15s}: {len(samples):>5d} samples")
+    for _ in range(2):
+        tw = time_warp(raw.copy())
+        tw = resample(tw, SEQ_LEN)
+        samples.append(tw.astype(np.float32))
+        labels.append(label)
 
-    if cache_path:
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-        np.savez_compressed(
-            cache_path,
-            samples=np.array(samples, dtype=object),
-            labels=np.array(labels, dtype=np.int64),
-        )
-        logger.info(f"Cache saved: {cache_path}")
+    for _ in range(2):
+        sp = speed_change(raw.copy())
+        sp = resample(sp, SEQ_LEN)
+        samples.append(sp.astype(np.float32))
+        labels.append(label)
+
+    if class_name in LR_SWAP_MAP:
+        mir = mirror_x(raw.copy())
+        mir = resample(mir, SEQ_LEN)
+        swap_label = CLASS_TO_IDX[LR_SWAP_MAP[class_name]]
+        samples.append(mir.astype(np.float32))
+        labels.append(swap_label)
+        for _ in range(2):
+            aug_mir = add_jitter(mir.copy())
+            samples.append(aug_mir.astype(np.float32))
+            labels.append(swap_label)
+    elif class_name not in SWIPE_CLASSES:
+        mir = mirror_x(raw.copy())
+        mir = resample(mir, SEQ_LEN)
+        samples.append(mir.astype(np.float32))
+        labels.append(label)
+
+    if class_name not in SWIPE_CLASSES:
+        rev = raw[::-1].copy()
+        rev = resample(rev, SEQ_LEN)
+        samples.append(rev.astype(np.float32))
+        labels.append(label)
 
     return samples, labels
 
 
-def compute_normalize_stats(samples):
-    """Compute per-feature mean and std from the training set."""
-    all_data = np.array([s.astype(np.float32) for s in samples], dtype=np.float32)
-    return {
-        "mean": all_data.mean(axis=(0, 1)).astype(np.float32),
-        "std": all_data.std(axis=(0, 1)).astype(np.float32),
-    }
+def save_cache(cache_path, samples, labels, is_train):
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(cache_path)), exist_ok=True)
+        if len(samples) == 0:
+            sample_arr = np.zeros((0, SEQ_LEN, RAW_DIM), dtype=np.float32)
+        else:
+            sample_arr = np.stack([to_raw_sequence(s, target_len=SEQ_LEN) for s in samples], axis=0).astype(np.float32)
+        label_arr = np.asarray(labels, dtype=np.int64)
+        np.savez_compressed(
+            cache_path,
+            cache_version=np.array(CACHE_VERSION),
+            sample_format=np.array("raw_landmarks"),
+            raw_dim=np.array(RAW_DIM),
+            seq_len=np.array(SEQ_LEN),
+            is_train=np.array(int(is_train)),
+            samples=sample_arr,
+            labels=label_arr,
+        )
+        logger.info(f"Cache saved: {cache_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save cache {cache_path}: {e}")
 
 
-def create_weighted_sampler(labels):
-    """Build a WeightedRandomSampler to counter class imbalance."""
-    counts = np.bincount(labels, minlength=NUM_CLASSES)
-    weights = 1.0 / (counts + 1e-6)
-    sample_weights = [weights[l] for l in labels]
-    return WeightedRandomSampler(weights=sample_weights, num_samples=len(labels), replacement=True)
+def try_load_cache(cache_path, is_train):
+    if not cache_path or not os.path.exists(cache_path):
+        return None
+    logger.info(f"Loading cache: {cache_path}")
+    try:
+        with np.load(cache_path, allow_pickle=True) as c:
+            version = to_scalar(c["cache_version"]) if "cache_version" in c.files else None
+            sample_format = to_scalar(c["sample_format"]) if "sample_format" in c.files else None
+            raw_dim = to_scalar(c["raw_dim"]) if "raw_dim" in c.files else None
+            seq_len = to_scalar(c["seq_len"]) if "seq_len" in c.files else None
+            cache_is_train = to_scalar(c["is_train"]) if "is_train" in c.files else None
+            if (
+                version != CACHE_VERSION
+                or sample_format != "raw_landmarks"
+                or raw_dim != RAW_DIM
+                or seq_len != SEQ_LEN
+                or cache_is_train != int(is_train)
+            ):
+                raise ValueError("cache metadata mismatch")
+            samples = np.asarray(c["samples"], dtype=np.float32)
+            labels = np.asarray(c["labels"], dtype=np.int64)
+        if samples.ndim != 3 or samples.shape[1] != SEQ_LEN or samples.shape[2] != RAW_DIM:
+            raise ValueError(f"cache sample shape mismatch: {samples.shape}")
+        if len(samples) != len(labels):
+            raise ValueError("cache sample/label count mismatch")
+        out_samples = [np.ascontiguousarray(s, dtype=np.float32) for s in samples]
+        out_labels = labels.astype(np.int64).tolist()
+        logger.info(f"  {len(out_samples)} samples loaded")
+        return out_samples, out_labels
+    except Exception as e:
+        logger.warning(f"Cache incompatible, rebuilding from videos: {e}")
+        return None
 
 
-def train_one_epoch(model, loader, criterion, optimizer, device):
-    model.train()
-    total_loss, correct, total = 0.0, 0, 0
-    for bx, by in loader:
-        bx, by = bx.to(device), by.to(device)
-        optimizer.zero_grad()
-        logits = model(bx)
-        loss = criterion(logits, by)
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item() * bx.size(0)
-        correct += (logits.argmax(1) == by).sum().item()
-        total += bx.size(0)
-    return total_loss / total, correct / total
+def sanitize_dataset(samples, labels, name):
+    fixed_samples = []
+    fixed_labels = []
+    if len(samples) != len(labels):
+        logger.warning(f"{name}: sample/label count mismatch, using min length")
+    for s, l in zip(samples, labels):
+        raw = to_raw_sequence(s, target_len=SEQ_LEN)
+        if raw is None:
+            continue
+        fixed_samples.append(raw.astype(np.float32))
+        fixed_labels.append(int(l))
+    skipped = len(list(zip(samples, labels))) - len(fixed_samples)
+    if skipped > 0:
+        logger.warning(f"{name}: skipped {skipped} invalid samples")
+    return fixed_samples, fixed_labels
+
+
+class GestureDataset(Dataset):
+    def __init__(self, raw_samples, labels, norm_stats=None, augment=False):
+        self.raw_samples = raw_samples
+        self.labels = labels
+        self.norm_stats = norm_stats
+        self.augment = augment
+
+    def __len__(self):
+        return len(self.raw_samples)
+
+    def __getitem__(self, idx):
+        raw = self.raw_samples[idx].copy()
+        label = self.labels[idx]
+        if self.augment and random.random() < 0.5:
+            raw = add_jitter(raw, sigma=0.002)
+        if self.augment and random.random() < 0.3:
+            raw = time_warp(raw)
+            raw = resample(raw, SEQ_LEN)
+        feat = compute_features(raw)
+        if self.norm_stats is not None:
+            feat = (feat - self.norm_stats["mean"]) / (self.norm_stats["std"] + 1e-8)
+        x = torch.FloatTensor(feat.T)
+        y = torch.tensor(label, dtype=torch.long)
+        return x, y
+
+
+class CausalConv1d(nn.Module):
+    def __init__(self, in_ch, out_ch, ks, dilation=1):
+        super().__init__()
+        self.pad = (ks - 1) * dilation
+        self.conv = nn.Conv1d(in_ch, out_ch, ks, padding=self.pad, dilation=dilation, bias=False)
+
+    def forward(self, x):
+        o = self.conv(x)
+        if self.pad > 0:
+            o = o[:, :, :-self.pad]
+        return o
+
+
+class ResBlock(nn.Module):
+    def __init__(self, ch, ks=3, dilation=1, dropout=0.15):
+        super().__init__()
+        self.net = nn.Sequential(
+            CausalConv1d(ch, ch, ks, dilation),
+            nn.BatchNorm1d(ch),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            CausalConv1d(ch, ch, ks, dilation),
+            nn.BatchNorm1d(ch),
+        )
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        return self.act(self.net(x) + x)
+
+
+class ChannelBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, ks=3, dilation=1, dropout=0.15):
+        super().__init__()
+        self.net = nn.Sequential(
+            CausalConv1d(in_ch, out_ch, ks, dilation),
+            nn.BatchNorm1d(out_ch),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            CausalConv1d(out_ch, out_ch, ks, dilation),
+            nn.BatchNorm1d(out_ch),
+        )
+        self.skip = nn.Sequential(
+            nn.Conv1d(in_ch, out_ch, 1, bias=False),
+            nn.BatchNorm1d(out_ch),
+        )
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        return self.act(self.net(x) + self.skip(x))
+
+
+class GestureTCN(nn.Module):
+    def __init__(self, num_classes=NUM_CLASSES, feat_dim=FEATURE_DIM, dropout=0.15):
+        super().__init__()
+        self.stem = nn.Sequential(
+            nn.Conv1d(feat_dim, 48, 1, bias=False),
+            nn.BatchNorm1d(48),
+            nn.ReLU(inplace=True),
+        )
+        self.blocks = nn.Sequential(
+            ResBlock(48, 3, 1, dropout),
+            ResBlock(48, 3, 2, dropout),
+            ChannelBlock(48, 64, 3, 4, dropout),
+            ResBlock(64, 3, 1, dropout),
+        )
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.head = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(32, num_classes),
+        )
+        self._init()
+
+    def _init(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.blocks(x)
+        x = self.pool(x).squeeze(-1)
+        return self.head(x)
+
+
+def load_dataset(data_dir, detector, cache_path=None, is_train=True):
+    cached = try_load_cache(cache_path, is_train)
+    if cached is not None:
+        return cached
+
+    all_samples, all_labels = [], []
+    counts = defaultdict(int)
+    dp = Path(data_dir)
+    for cn in CLASS_NAMES:
+        cd = dp / cn
+        if not cd.exists():
+            logger.warning(f"Not found: {cd}")
+            continue
+        vfs = sorted(
+            f for f in cd.iterdir()
+            if f.suffix.lower() in (".mp4", ".avi", ".mov", ".mkv", ".webm")
+        )
+        logger.info(f"  [{cn}]: {len(vfs)} videos")
+        for vf in tqdm(vfs, desc=f"  {cn}", leave=False):
+            lm_list, total = extract_video(vf, detector)
+            if total == 0:
+                continue
+            samps, labs = make_samples(lm_list, total, cn, is_train)
+            for s, l in zip(samps, labs):
+                raw = to_raw_sequence(s, target_len=SEQ_LEN)
+                if raw is None:
+                    continue
+                all_samples.append(raw.astype(np.float32))
+                all_labels.append(int(l))
+                counts[CLASS_NAMES[l]] += 1
+
+    logger.info("Dataset statistics:")
+    for cn in CLASS_NAMES:
+        logger.info(f"  {cn:>15s}: {counts[cn]:>5d} samples")
+    logger.info(f"  {'Total':>15s}: {len(all_samples):>5d} samples")
+
+    if cache_path:
+        save_cache(cache_path, all_samples, all_labels, is_train)
+
+    return all_samples, all_labels
+
+
+def compute_norm_stats(samples):
+    sum_feat = None
+    sum_sq_feat = None
+    total_frames = 0
+    bad = 0
+
+    for s in tqdm(samples, desc="  norm", leave=False):
+        raw = to_raw_sequence(s, target_len=SEQ_LEN)
+        if raw is None:
+            bad += 1
+            continue
+        feat = compute_features(raw).astype(np.float64)
+        cur_sum = feat.sum(axis=0)
+        cur_sq = np.square(feat).sum(axis=0)
+        if sum_feat is None:
+            sum_feat = cur_sum
+            sum_sq_feat = cur_sq
+        else:
+            sum_feat += cur_sum
+            sum_sq_feat += cur_sq
+        total_frames += feat.shape[0]
+
+    if total_frames == 0:
+        raise RuntimeError("No valid samples for normalization")
+
+    mean64 = sum_feat / total_frames
+    var64 = np.maximum(sum_sq_feat / total_frames - np.square(mean64), 1e-12)
+    mean = mean64.astype(np.float32)
+    std = np.sqrt(var64).astype(np.float32)
+
+    if bad > 0:
+        logger.warning(f"Skipped {bad} invalid samples while computing normalization stats")
+
+    return {"mean": mean, "std": std}
+
+
+def compute_class_weights(labels):
+    counts = np.bincount(labels, minlength=NUM_CLASSES).astype(float)
+    counts = np.maximum(counts, 1.0)
+    w = counts.sum() / (NUM_CLASSES * counts)
+    w = w / w.sum() * NUM_CLASSES
+    return torch.FloatTensor(w)
+
+
+def make_sampler(labels):
+    counts = np.bincount(labels, minlength=NUM_CLASSES).astype(float)
+    counts = np.maximum(counts, 1.0)
+    sw = [1.0 / counts[l] for l in labels]
+    return WeightedRandomSampler(sw, len(sw), replacement=True)
 
 
 @torch.no_grad()
 def evaluate(model, loader, criterion, device):
+    if loader is None:
+        return 0.0, 0.0, [], []
     model.eval()
     total_loss, correct, total = 0.0, 0, 0
-    all_preds, all_labels = [], []
+    preds_all, labels_all = [], []
     for bx, by in loader:
         bx, by = bx.to(device), by.to(device)
         logits = model(bx)
         loss = criterion(logits, by)
         total_loss += loss.item() * bx.size(0)
-        preds = logits.argmax(1)
-        correct += (preds == by).sum().item()
+        p = logits.argmax(1)
+        correct += (p == by).sum().item()
         total += bx.size(0)
-        all_preds.extend(preds.cpu().numpy())
-        all_labels.extend(by.cpu().numpy())
-    return total_loss / total, correct / total, all_preds, all_labels
+        preds_all.extend(p.cpu().numpy())
+        labels_all.extend(by.cpu().numpy())
+    if total == 0:
+        return 0.0, 0.0, preds_all, labels_all
+    return total_loss / total, correct / total, preds_all, labels_all
 
 
-def apply_l1_pruning(model, amount=PRUNE_AMOUNT):
-    """Apply L1 unstructured pruning to all Linear layers inside
-    model.classifier. Convolutional layers are left intact."""
-    logger.info(f"Applying L1 unstructured pruning to FC layers (ratio={amount:.0%})")
-    pruned = 0
-    for name, module in model.classifier.named_modules():
-        if isinstance(module, nn.Linear):
-            n_total = module.weight.nelement()
-            z_before = (module.weight == 0).sum().item()
-            prune.l1_unstructured(module, name="weight", amount=amount)
-            z_after = (module.weight == 0).sum().item()
+def load_state_dict_file(path, device):
+    try:
+        return torch.load(path, map_location=device, weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location=device)
+
+
+def train_model(train_samples, train_labels, test_samples, test_labels, norm_stats, class_weights, args):
+    sampler = make_sampler(train_labels)
+    tr_ds = GestureDataset(train_samples, train_labels, norm_stats, augment=True)
+    te_ds = GestureDataset(test_samples, test_labels, norm_stats, augment=False)
+    tr_loader = DataLoader(
+        tr_ds,
+        batch_size=args.batch_size,
+        sampler=sampler,
+        num_workers=0,
+        pin_memory=(DEVICE.type == "cuda"),
+    )
+    te_loader = DataLoader(
+        te_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=0,
+    )
+
+    model = GestureTCN(NUM_CLASSES, FEATURE_DIM, dropout=args.dropout).to(DEVICE)
+    total_params = sum(p.numel() for p in model.parameters())
+    logger.info(f"Model params: {total_params:,}")
+
+    try:
+        criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE), label_smoothing=0.1)
+    except TypeError:
+        criterion = nn.CrossEntropyLoss(weight=class_weights.to(DEVICE))
+
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=WEIGHT_DECAY)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-5)
+
+    best_acc = -1.0
+    best_epoch = 0
+    patience_ctr = 0
+    os.makedirs(args.save_dir, exist_ok=True)
+    ckpt_path = os.path.join(args.save_dir, "gesture_tcn_best.pth")
+
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        t_loss, t_correct, t_total = 0.0, 0, 0
+        for bx, by in tr_loader:
+            bx, by = bx.to(DEVICE), by.to(DEVICE)
+            optimizer.zero_grad()
+            logits = model(bx)
+            loss = criterion(logits, by)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 2.0)
+            optimizer.step()
+            t_loss += loss.item() * bx.size(0)
+            t_correct += (logits.argmax(1) == by).sum().item()
+            t_total += bx.size(0)
+
+        scheduler.step()
+
+        tr_loss = t_loss / max(t_total, 1)
+        tr_acc = t_correct / max(t_total, 1)
+        te_loss, te_acc, _, _ = evaluate(model, te_loader, criterion, DEVICE)
+        lr_now = optimizer.param_groups[0]["lr"]
+
+        tag = ""
+        if te_acc > best_acc:
+            best_acc = te_acc
+            best_epoch = epoch
+            patience_ctr = 0
+            torch.save(model.state_dict(), ckpt_path)
+            tag = "  <- best"
+        else:
+            patience_ctr += 1
+
+        if epoch % 5 == 0 or tag:
             logger.info(
-                f"  classifier.{name}: params={n_total}, "
-                f"zeros_before={z_before}, zeros_after={z_after} "
-                f"({z_after / n_total:.1%})"
+                f"Epoch {epoch:>3d}/{args.epochs} | "
+                f"TrL:{tr_loss:.4f} TrA:{tr_acc:.4f} | "
+                f"TeL:{te_loss:.4f} TeA:{te_acc:.4f} | "
+                f"LR:{lr_now:.2e}{tag}"
             )
-            pruned += 1
-    logger.info(f"Pruned {pruned} FC layer(s)")
+
+        if patience_ctr >= PATIENCE:
+            logger.info(f"Early stop at epoch {epoch}")
+            break
+
+    logger.info(f"Best test acc: {max(best_acc, 0.0):.4f} @ epoch {best_epoch}")
+    model.load_state_dict(load_state_dict_file(ckpt_path, DEVICE))
+    return model, te_loader, max(best_acc, 0.0)
+
+
+def apply_pruning(model, amount):
+    logger.info(f"Pruning {amount:.0%} ...")
+    for m in model.modules():
+        if isinstance(m, (nn.Linear, nn.Conv1d)):
+            prune.l1_unstructured(m, "weight", amount=amount)
     return model
 
 
-def make_pruning_permanent(model):
-    """Remove the pruning re-parametrisation hooks so the masks are
-    baked into the weight tensors permanently."""
-    for _, module in model.classifier.named_modules():
-        if isinstance(module, nn.Linear):
+def remove_pruning(model):
+    for m in model.modules():
+        if isinstance(m, (nn.Linear, nn.Conv1d)):
             try:
-                prune.remove(module, "weight")
+                prune.remove(m, "weight")
             except ValueError:
                 pass
-    logger.info("Pruning masks made permanent")
 
 
-def print_sparsity_report(model):
-    logger.info("Sparsity report:")
-    logger.info(f"{'Layer':>35s} | {'Params':>10s} | {'Zeros':>10s} | {'Sparsity':>8s}")
-    logger.info("-" * 75)
+def sparsity_report(model):
     tp, tz = 0, 0
-    for name, param in model.named_parameters():
+    for name, p in model.named_parameters():
         if "weight" in name:
-            n_p = param.nelement()
-            n_z = (param == 0).sum().item()
-            tp += n_p
-            tz += n_z
-            logger.info(f"{name:>35s} | {n_p:>10d} | {n_z:>10d} | {n_z / n_p:>7.1%}")
-    logger.info("-" * 75)
-    logger.info(f"{'Total':>35s} | {tp:>10d} | {tz:>10d} | {tz / tp:>7.1%}")
+            n = p.numel()
+            z = (p == 0).sum().item()
+            tp += n
+            tz += z
+            logger.info(f"  {name:>45s} | {n:>7d} | {z / max(n, 1):>5.1%}")
+    logger.info(f"  {'Total':>45s} | {tp:>7d} | {tz / max(tp, 1):>5.1%}")
 
 
-def save_model(model, normalize_stats, save_dir="checkpoints"):
-    """Persist the pruned model weights and a JSON config file."""
+def export_torchscript(model, save_dir):
+    m = deepcopy(model).cpu().eval()
+    d = torch.randn(1, FEATURE_DIM, SEQ_LEN)
+    p = os.path.join(save_dir, "gesture_tcn.pt")
+    try:
+        t = torch.jit.trace(m, d)
+        t.save(p)
+        logger.info(f"TorchScript: {p}")
+    except Exception as e:
+        logger.warning(f"TorchScript failed: {e}")
+
+
+def export_onnx(model, save_dir):
+    m = deepcopy(model).cpu().eval()
+    d = torch.randn(1, FEATURE_DIM, SEQ_LEN)
+    p = os.path.join(save_dir, "gesture_tcn.onnx")
+    try:
+        torch.onnx.export(
+            m,
+            d,
+            p,
+            input_names=["input"],
+            output_names=["logits"],
+            dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
+            opset_version=17,
+        )
+        logger.info(f"ONNX: {p}")
+    except Exception as e:
+        logger.warning(f"ONNX failed: {e}")
+
+
+def export_int8(model, save_dir):
+    try:
+        from torch.quantization import quantize_dynamic
+        m = deepcopy(model).cpu().eval()
+        q = quantize_dynamic(m, {nn.Linear}, dtype=torch.qint8)
+        p = os.path.join(save_dir, "gesture_tcn_int8.pt")
+        torch.save(q.state_dict(), p)
+        logger.info(f"INT8: {p}")
+    except Exception as e:
+        logger.warning(f"INT8 failed: {e}")
+
+
+def save_all(model, norm_stats, save_dir):
     os.makedirs(save_dir, exist_ok=True)
-
-    model_path = os.path.join(save_dir, "gesture_cnn1d_pruned.pth")
-    torch.save(model.state_dict(), model_path)
-    logger.info(f"Pruned model saved: {model_path}")
-
-    config = {
+    pp = os.path.join(save_dir, "gesture_tcn_pruned.pth")
+    torch.save(model.state_dict(), pp)
+    logger.info(f"Weights: {pp}")
+    cfg = {
+        "cache_version": CACHE_VERSION,
         "class_names": CLASS_NAMES,
         "seq_len": SEQ_LEN,
         "feature_dim": FEATURE_DIM,
+        "raw_dim": RAW_DIM,
         "num_classes": NUM_CLASSES,
         "num_landmarks": NUM_LANDMARKS,
-        "prune_amount": PRUNE_AMOUNT,
-        "normalize_mean": normalize_stats["mean"].tolist(),
-        "normalize_std": normalize_stats["std"].tolist(),
+        "normalize_mean": norm_stats["mean"].tolist(),
+        "normalize_std": norm_stats["std"].tolist(),
+        "pairs": PAIRS,
+        "fingertip_ids": FINGERTIP_IDS,
+        "base_ids": BASE_IDS,
+        "n_fingers": N_FINGERS,
+        "finger_chains": FINGER_CHAINS,
     }
-    config_path = os.path.join(save_dir, "config.json")
-    with open(config_path, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-    logger.info(f"Config saved: {config_path}")
+    cp = os.path.join(save_dir, "config.json")
+    with open(cp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    logger.info(f"Config: {cp}")
+    export_torchscript(model, save_dir)
+    export_onnx(model, save_dir)
+    export_int8(model, save_dir)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Gesture 1D-CNN Training Pipeline")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir", type=str, default="data")
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
     parser.add_argument("--lr", type=float, default=LR)
-    parser.add_argument("--save_dir", type=str, default="checkpoints")
-    parser.add_argument("--no_cache", action="store_true", help="Force re-extraction of landmarks")
+    parser.add_argument("--save_dir", type=str, default="checkpoints_v4")
+    parser.add_argument("--no_cache", action="store_true")
     parser.add_argument("--prune_amount", type=float, default=PRUNE_AMOUNT)
+    parser.add_argument("--dropout", type=float, default=0.15)
     args = parser.parse_args()
 
-    logger.info("Gesture Recognition 1D-CNN Training Pipeline")
-    logger.info(f"Device: {DEVICE}")
-    logger.info(f"Data dir: {args.data_dir}")
-    logger.info(f"Seq length: {SEQ_LEN}, Feature dim: {FEATURE_DIM}")
-    logger.info(f"Classes: {NUM_CLASSES}, Epochs: {args.epochs}")
-    logger.info(f"Prune ratio: {args.prune_amount:.0%}")
+    check_feature_dim()
 
-    # Phase 1: landmark extraction
-    logger.info("[Phase 1] Extracting hand landmarks...")
-    detector = HandDetector(static_mode=True, max_hands=1, min_detection_conf=0.5)
+    logger.info("=" * 60)
+    logger.info("  Gesture Recognition TCN v6")
+    logger.info("=" * 60)
+    logger.info(f"  Device      : {DEVICE}")
+    logger.info(f"  Feature dim : {FEATURE_DIM}")
+    logger.info(f"  Seq len     : {SEQ_LEN}")
+    logger.info(f"  Classes     : {NUM_CLASSES} -> {CLASS_NAMES}")
+    logger.info("=" * 60)
+
+    detector = HandDetector(static_mode=True, max_hands=1, min_conf=0.5)
 
     train_dir = os.path.join(args.data_dir, "Train")
     test_dir = os.path.join(args.data_dir, "Test")
     cache_dir = os.path.join(args.save_dir, "cache")
-    train_cache = None if args.no_cache else os.path.join(cache_dir, "train.npz")
-    test_cache = None if args.no_cache else os.path.join(cache_dir, "test.npz")
+    tr_cache = None if args.no_cache else os.path.join(cache_dir, f"train_{CACHE_VERSION}.npz")
+    te_cache = None if args.no_cache else os.path.join(cache_dir, f"test_{CACHE_VERSION}.npz")
 
-    logger.info("Processing training set...")
-    train_samples, train_labels = load_dataset(train_dir, detector, train_cache)
-    logger.info("Processing test set...")
-    test_samples, test_labels = load_dataset(test_dir, detector, test_cache)
+    logger.info("[Phase 1] Extracting landmarks ...")
+    train_samples, train_labels = load_dataset(train_dir, detector, tr_cache, is_train=True)
+    test_samples, test_labels = load_dataset(test_dir, detector, te_cache, is_train=False)
     detector.close()
 
+    train_samples, train_labels = sanitize_dataset(train_samples, train_labels, "train")
+    test_samples, test_labels = sanitize_dataset(test_samples, test_labels, "test")
+
     if len(train_samples) == 0:
-        logger.error("Training set is empty. Check the data directory.")
+        logger.error("No training data!")
         sys.exit(1)
 
-    # Phase 2: normalisation statistics
-    logger.info("[Phase 2] Computing normalisation statistics...")
-    norm_stats = compute_normalize_stats(train_samples)
-    logger.info(
-        f"  Mean range: [{norm_stats['mean'].min():.4f}, {norm_stats['mean'].max():.4f}]"
+    logger.info(f"  Train: {len(train_samples)}, Test: {len(test_samples)}")
+
+    logger.info("[Phase 2] Computing normalization stats ...")
+    norm_stats = compute_norm_stats(train_samples)
+    logger.info(f"  Mean range: [{norm_stats['mean'].min():.4f}, {norm_stats['mean'].max():.4f}]")
+    logger.info(f"  Std range:  [{norm_stats['std'].min():.4f}, {norm_stats['std'].max():.4f}]")
+
+    logger.info("[Phase 3] Class weights ...")
+    cw = compute_class_weights(train_labels)
+    logger.info(f"  Weights: {cw.numpy().round(3)}")
+
+    logger.info("[Phase 4] Training ...")
+    model, te_loader, best_acc = train_model(
+        train_samples, train_labels, test_samples, test_labels,
+        norm_stats, cw, args
     )
-    logger.info(
-        f"  Std  range: [{norm_stats['std'].min():.4f}, {norm_stats['std'].max():.4f}]"
-    )
 
-    # Phase 3: data loaders
-    logger.info("[Phase 3] Building data loaders...")
-    augmentor = GestureAugmentor(p=0.5)
-    train_dataset = GestureDataset(train_samples, train_labels, augmentor=augmentor, normalize_stats=norm_stats)
-    test_dataset = GestureDataset(test_samples, test_labels, augmentor=None, normalize_stats=norm_stats)
+    logger.info("[Phase 5] Evaluation ...")
+    crit = nn.CrossEntropyLoss()
+    _, te_acc, preds, gts = evaluate(model, te_loader, crit, DEVICE)
+    logger.info(f"Accuracy: {te_acc:.4f}")
 
-    sampler = create_weighted_sampler(train_labels)
-    train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size,
-        sampler=sampler, num_workers=0, pin_memory=True, drop_last=True,
-    )
-    test_loader = DataLoader(
-        test_dataset, batch_size=args.batch_size,
-        shuffle=False, num_workers=0, pin_memory=True,
-    )
-    logger.info(f"  Train: {len(train_dataset)} samples, {len(train_loader)} batches/epoch")
-    logger.info(f"  Test : {len(test_dataset)} samples, {len(test_loader)} batches/epoch")
-
-    # Phase 4: model
-    logger.info("[Phase 4] Initialising model...")
-    model = GestureCNN1D(num_classes=NUM_CLASSES).to(DEVICE)
-    logger.info(f"  Total parameters: {sum(p.numel() for p in model.parameters()):,}")
-
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
-    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=WEIGHT_DECAY)
-    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=20, T_mult=2, eta_min=1e-6)
-
-    # Phase 5: training
-    logger.info("[Phase 5] Training...")
-    best_acc, best_epoch = 0.0, 0
-    patience, patience_ctr = 25, 0
-
-    for epoch in range(1, args.epochs + 1):
-        tr_loss, tr_acc = train_one_epoch(model, train_loader, criterion, optimizer, DEVICE)
-        te_loss, te_acc, _, _ = evaluate(model, test_loader, criterion, DEVICE)
-        scheduler.step()
-
-        lr_now = optimizer.param_groups[0]["lr"]
+    label_ids = list(range(NUM_CLASSES))
+    if len(gts) > 0:
         logger.info(
-            f"Epoch {epoch:>3d}/{args.epochs} | "
-            f"Train Loss:{tr_loss:.4f} Acc:{tr_acc:.4f} | "
-            f"Test  Loss:{te_loss:.4f} Acc:{te_acc:.4f} | LR:{lr_now:.2e}"
+            "Report:\n" + classification_report(
+                gts,
+                preds,
+                labels=label_ids,
+                target_names=CLASS_NAMES,
+                digits=4,
+                zero_division=0,
+            )
         )
+        cm = confusion_matrix(gts, preds, labels=label_ids)
+        logger.info("Confusion matrix:")
+        hdr = "          " + "  ".join(f"{n[:6]:>6s}" for n in CLASS_NAMES)
+        logger.info(hdr)
+        for i, row in enumerate(cm):
+            logger.info(f"  {CLASS_NAMES[i][:8]:>8s}  " + "  ".join(f"{v:>6d}" for v in row))
+    else:
+        logger.warning("No test samples available, skipping detailed evaluation.")
 
-        if te_acc > best_acc:
-            best_acc, best_epoch, patience_ctr = te_acc, epoch, 0
-            os.makedirs(args.save_dir, exist_ok=True)
-            torch.save(model.state_dict(), os.path.join(args.save_dir, "gesture_cnn1d_best.pth"))
-        else:
-            patience_ctr += 1
+    logger.info("[Phase 6] Pruning ...")
+    model = apply_pruning(model, args.prune_amount)
+    _, pa, _, _ = evaluate(model, te_loader, crit, DEVICE)
+    logger.info(f"Post-pruning acc: {pa:.4f}")
+    remove_pruning(model)
+    sparsity_report(model)
 
-        if patience_ctr >= patience:
-            logger.info(f"Early stopping triggered (patience={patience})")
-            break
+    logger.info("[Phase 7] Saving ...")
+    save_all(model, norm_stats, args.save_dir)
 
-    logger.info(f"Training complete. Best test accuracy: {best_acc:.4f} (epoch {best_epoch})")
-
-    # Phase 6: evaluate best model
-    logger.info("[Phase 6] Loading best model for evaluation...")
-    model.load_state_dict(
-        torch.load(os.path.join(args.save_dir, "gesture_cnn1d_best.pth"), map_location=DEVICE, weights_only=True)
-    )
-    _, te_acc, preds, labels = evaluate(model, test_loader, criterion, DEVICE)
-    logger.info(f"Best model test accuracy: {te_acc:.4f}")
-    logger.info("Classification report (before pruning):\n" + classification_report(
-        labels, preds, target_names=CLASS_NAMES, digits=4, zero_division=0
-    ))
-
-    # Phase 7: L1 pruning
-    logger.info("[Phase 7] L1 unstructured pruning on FC layers...")
-    model = apply_l1_pruning(model, amount=args.prune_amount)
-
-    _, te_acc_p, preds_p, labels_p = evaluate(model, test_loader, criterion, DEVICE)
-    logger.info(f"Post-pruning test accuracy: {te_acc_p:.4f} (delta: {te_acc_p - te_acc:+.4f})")
-    logger.info("Classification report (after pruning):\n" + classification_report(
-        labels_p, preds_p, target_names=CLASS_NAMES, digits=4, zero_division=0
-    ))
-
-    make_pruning_permanent(model)
-    print_sparsity_report(model)
-
-    # Phase 8: save
-    logger.info("[Phase 8] Saving final model...")
-    save_model(model, norm_stats, save_dir=args.save_dir)
-    logger.info(f"Pipeline finished. Model: {args.save_dir}/gesture_cnn1d_pruned.pth")
+    logger.info("=" * 60)
+    logger.info(f"  Done. Best={best_acc:.4f}  Pruned={pa:.4f}")
+    logger.info(f"  Output -> {args.save_dir}/")
+    logger.info("=" * 60)
 
 
 if __name__ == "__main__":
