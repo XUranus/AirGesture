@@ -1,0 +1,8 @@
+# /GrabDrop-Desktop/requirements.txt
+mediapipe==0.10.14
+opencv-python>=4.9.0
+mss>=9.0.1
+Pillow>=10.0.0
+numpy>=1.24.0
+matplotlib
+attrs
