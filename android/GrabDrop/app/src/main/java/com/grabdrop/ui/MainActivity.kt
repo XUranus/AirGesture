@@ -1,4 +1,3 @@
-// /GrabDrop/app/src/main/java/com/grabdrop/ui/MainActivity.kt
 package com.grabdrop.ui
 
 import android.Manifest
@@ -19,7 +18,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
-import androidx.compose.ui.platform.AccessibilityManager
 import androidx.core.content.ContextCompat
 import com.grabdrop.service.GrabDropService
 import com.grabdrop.service.MediaProjectionHolder
@@ -47,19 +45,28 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             GrabDropTheme {
+                var showSettings by remember { mutableStateOf(false) }
+
                 val isRunning by ServiceState.isRunning.collectAsState()
                 val statusText by ServiceState.statusText.collectAsState()
                 val nearbyDevices by ServiceState.nearbyDevices.collectAsState()
                 val eventLog by ServiceState.eventLog.collectAsState()
 
-                MainScreen(
-                    isRunning = isRunning,
-                    statusText = statusText,
-                    nearbyDevices = nearbyDevices,
-                    eventLog = eventLog,
-                    onStartClicked = { startPermissionFlow() },
-                    onStopClicked = { stopService() }
-                )
+                if (showSettings) {
+                    SettingsScreen(
+                        onBack = { showSettings = false }
+                    )
+                } else {
+                    MainScreen(
+                        isRunning = isRunning,
+                        statusText = statusText,
+                        nearbyDevices = nearbyDevices,
+                        eventLog = eventLog,
+                        onStartClicked = { startPermissionFlow() },
+                        onStopClicked = { stopService() },
+                        onSettingsClicked = { showSettings = true }
+                    )
+                }
             }
         }
     }
@@ -104,7 +111,6 @@ class MainActivity : ComponentActivity() {
         ) { result ->
             Log.d(TAG, "MediaProjection result: code=${result.resultCode}, data=${result.data}")
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                // Store in singleton — avoids parcelable serialization issues
                 MediaProjectionHolder.store(result.resultCode, result.data!!)
                 Log.d(TAG, "MediaProjection data stored in holder")
                 launchService()
@@ -156,18 +162,16 @@ class MainActivity : ComponentActivity() {
             }
 
             4 -> {
-                // Check accessibility service for swipe support
                 if (isAccessibilityServiceEnabled()) {
                     Log.d(TAG, "Accessibility service already enabled")
                     continuePermissionFlow(step = 5)
                 } else {
-                    // Show dialog explaining why, then open settings
                     android.app.AlertDialog.Builder(this)
                         .setTitle("Enable Swipe Gesture")
                         .setMessage(
                             "To simulate screen swipes with hand gestures, " +
                                     "enable GrabDrop in Accessibility settings.\n\n" +
-                                    "This is optional — grab/release gestures work without it."
+                                    "This is optional -- grab/release gestures work without it."
                         )
                         .setPositiveButton("Open Settings") { _, _ ->
                             startActivity(

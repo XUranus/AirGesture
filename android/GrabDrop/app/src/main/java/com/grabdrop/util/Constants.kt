@@ -1,45 +1,51 @@
-// /GrabDrop/app/src/main/java/com/grabdrop/util/Constants.kt
 package com.grabdrop.util
 
 import java.util.UUID
 
+/**
+ * Central configuration object.
+ *
+ * The values that are user-configurable are now delegated to [AppSettings]
+ * (backed by SharedPreferences), while truly fixed identifiers remain
+ * compile-time constants.
+ */
 object Constants {
+    // ── Fixed (not configurable) ─────────────────────────────────
     const val NOTIFICATION_CHANNEL_ID = "grabdrop_service"
     const val NOTIFICATION_ID = 1001
     const val SERVICE_ACTION_STOP = "com.grabdrop.STOP_SERVICE"
 
-    const val UDP_PORT = 9877
-    const val MULTICAST_GROUP = "239.255.77.88"
-
     const val BROADCAST_TYPE_SCREENSHOT_READY = "SCREENSHOT_READY"
-
-    const val SCREENSHOT_OFFER_TIMEOUT_MS = 10_000L
-    const val GRAB_COOLDOWN_MS = 3_000L
     const val MOCK_RELEASE_DELAY_MS = 2_500L
 
-    // Gesture detection
-    const val IDLE_FPS = 10
-    const val IDLE_FRAME_INTERVAL_MS = 1000L / IDLE_FPS
-    const val WAKEUP_FRAME_INTERVAL_MS = 33L  // ~30fps
-    const val IDLE_WINDOW_SIZE = 10
-    const val IDLE_TRIGGER_THRESHOLD = 8
-    const val WAKEUP_DURATION_MS = 2_000L
-    const val WAKEUP_CONFIRM_FRAMES = 8
+    val DEVICE_ID: String = UUID.randomUUID().toString().substring(0, 8)
 
-    const val FINGER_EXTENDED_THRESHOLD = 1.3f
-    const val FINGER_CURLED_THRESHOLD = 0.9f
-    const val MIN_FINGERS_FOR_PALM = 3
-    const val MIN_FINGERS_FOR_FIST = 3
+    // ── Configurable via AppSettings ─────────────────────────────
+
+    // Network
+    val UDP_PORT: Int get() = AppSettings.udpPort
+    val MULTICAST_GROUP: String get() = AppSettings.multicastGroup
+    val SCREENSHOT_OFFER_TIMEOUT_MS: Long get() = AppSettings.screenshotOfferTimeoutMs
+    val GRAB_COOLDOWN_MS: Long get() = AppSettings.grabCooldownMs
+
+    // Gesture detection – timing
+    val IDLE_FPS: Int get() = AppSettings.idleFps
+    val IDLE_FRAME_INTERVAL_MS: Long get() = AppSettings.idleFrameIntervalMs
+    val WAKEUP_FRAME_INTERVAL_MS: Long get() = AppSettings.wakeupFrameIntervalMs
+    val IDLE_WINDOW_SIZE: Int get() = AppSettings.idleWindowSize
+    val IDLE_TRIGGER_THRESHOLD: Int get() = AppSettings.idleTriggerThreshold
+    val WAKEUP_DURATION_MS: Long get() = AppSettings.wakeupDurationMs
+    val WAKEUP_CONFIRM_FRAMES: Int get() = AppSettings.wakeupConfirmFrames
+
+    // Gesture detection – hand classification
+    val FINGER_EXTENDED_THRESHOLD: Float get() = AppSettings.fingerExtendedThreshold
+    val FINGER_CURLED_THRESHOLD: Float get() = AppSettings.fingerCurledThreshold
+    val MIN_FINGERS_FOR_PALM: Int get() = AppSettings.minFingersForPalm
+    val MIN_FINGERS_FOR_FIST: Int get() = AppSettings.minFingersForFist
 
     // Swipe detection
-    // Normalized displacement threshold (0-1 range, where 1 = full frame height)
-    const val SWIPE_DISPLACEMENT_THRESHOLD = 0.12f
-    // Minimum consecutive frames moving in same direction
-    const val SWIPE_CONFIRM_FRAMES = 5
-    // Minimum velocity (displacement per frame) to count as moving
-    const val SWIPE_MIN_VELOCITY = 0.008f
-    // Swipe cooldown (shorter than grab cooldown since swipe is repeatable)
-    const val SWIPE_COOLDOWN_MS = 800L
-
-    val DEVICE_ID: String = UUID.randomUUID().toString().substring(0, 8)
+    val SWIPE_DISPLACEMENT_THRESHOLD: Float get() = AppSettings.swipeDisplacementThreshold
+    val SWIPE_CONFIRM_FRAMES: Int get() = AppSettings.swipeConfirmFrames
+    val SWIPE_MIN_VELOCITY: Float get() = AppSettings.swipeMinVelocity
+    val SWIPE_COOLDOWN_MS: Long get() = AppSettings.swipeCooldownMs
 }

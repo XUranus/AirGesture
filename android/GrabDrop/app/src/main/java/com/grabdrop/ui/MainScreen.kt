@@ -1,4 +1,3 @@
-// /GrabDrop/app/src/main/java/com/grabdrop/ui/MainScreen.kt
 package com.grabdrop.ui
 
 import androidx.compose.animation.*
@@ -27,10 +26,6 @@ import androidx.compose.ui.unit.sp
 import com.grabdrop.service.ServiceState
 import com.grabdrop.ui.theme.*
 
-import android.accessibilityservice.AccessibilityServiceInfo
-import android.view.accessibility.AccessibilityManager
-import com.grabdrop.service.SwipeAccessibilityService
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
@@ -39,7 +34,8 @@ fun MainScreen(
     nearbyDevices: Int,
     eventLog: List<String>,
     onStartClicked: () -> Unit,
-    onStopClicked: () -> Unit
+    onStopClicked: () -> Unit,
+    onSettingsClicked: () -> Unit = {}
 ) {
     val debugMode by ServiceState.debugMode.collectAsState()
 
@@ -59,6 +55,15 @@ fun MainScreen(
                     }
                 },
                 actions = {
+                    // Settings button
+                    IconButton(onClick = onSettingsClicked) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            tint = TextSecondary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
                     // Debug toggle
                     IconButton(
                         onClick = { ServiceState.setDebugMode(!debugMode) }
@@ -267,11 +272,11 @@ private fun HowItWorksCard() {
             Text("How it works", style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold, color = Blue400)
             Spacer(Modifier.height(12.dp))
-            HowItWorksStep("✊", "Grab to capture", "Make a grab gesture (palm → fist) to take a screenshot")
+            HowItWorksStep("fist", "Grab to capture", "Make a grab gesture (palm -> fist) to take a screenshot")
             Spacer(Modifier.height(10.dp))
-            HowItWorksStep("📡", "Auto-broadcast", "The screenshot is announced to nearby devices on your WiFi")
+            HowItWorksStep("broadcast", "Auto-broadcast", "The screenshot is announced to nearby devices on your WiFi")
             Spacer(Modifier.height(10.dp))
-            HowItWorksStep("🤚", "Release to receive", "On another device, open your hand (fist → palm) to receive it")
+            HowItWorksStep("hand", "Release to receive", "On another device, open your hand (fist -> palm) to receive it")
         }
     }
 }
@@ -279,7 +284,15 @@ private fun HowItWorksCard() {
 @Composable
 private fun HowItWorksStep(emoji: String, title: String, desc: String) {
     Row {
-        Text(emoji, fontSize = 22.sp)
+        Text(
+            when (emoji) {
+                "fist" -> "\u270a"
+                "broadcast" -> "\ud83d\udce1"
+                "hand" -> "\ud83e\udd1a"
+                else -> emoji
+            },
+            fontSize = 22.sp
+        )
         Spacer(Modifier.width(12.dp))
         Column {
             Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = TextPrimary)
@@ -325,12 +338,12 @@ private fun EventLogCard(eventLog: List<String>, modifier: Modifier = Modifier) 
                                 fontFamily = FontFamily.Monospace, fontSize = 11.sp, lineHeight = 15.sp
                             ),
                             color = when {
-                                "❌" in event || "💀" in event -> RedStop
-                                "✅" in event || "CONFIRMED" in event -> GreenActive
-                                "🔔" in event || "WAKEUP" in event -> Cyan400
-                                "⏱️" in event -> Blue400
-                                "🔄" in event -> Color(0xFFFF9800)
-                                "📊" in event || "🐛" in event -> TextSecondary
+                                "FAILED" in event || "CRASH" in event -> RedStop
+                                "CONFIRMED" in event || "started" in event -> GreenActive
+                                "WAKEUP" in event -> Cyan400
+                                "WK" in event -> Blue400
+                                "Swipe" in event -> Color(0xFFFF9800)
+                                "Stats" in event || "Debug" in event -> TextSecondary
                                 else -> TextPrimary
                             },
                             maxLines = 3,

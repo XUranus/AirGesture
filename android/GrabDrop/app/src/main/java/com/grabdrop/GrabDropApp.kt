@@ -1,15 +1,15 @@
-// /GrabDrop/app/src/main/java/com/grabdrop/GrabDropApp.kt
 package com.grabdrop
 
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.os.Build
+import com.grabdrop.util.AppSettings
 import com.grabdrop.util.Constants
 
 class GrabDropApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        AppSettings.init(this)
         createNotificationChannel()
     }
 
@@ -26,4 +26,3 @@ class GrabDropApp : Application() {
         manager.createNotificationChannel(channel)
     }
 }
-
