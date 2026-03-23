@@ -65,6 +65,9 @@ dependencies {
     // MediaPipe Hand Landmarker
     implementation("com.google.mediapipe:tasks-vision:0.10.14")
 
+    // ONNX Runtime for gesture classification (1.20+ supports IR version 10)
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.20.0")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 
 

@@ -1,6 +1,7 @@
 // /GrabDrop/app/src/main/java/com/grabdrop/overlay/OverlayManager.kt
 package com.grabdrop.overlay
 
+import com.grabdrop.R
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
@@ -116,7 +117,7 @@ class OverlayManager(private val context: Context) {
     private fun hideWakeupIndicatorInternal() {
         wakeupIndicatorView?.let { view ->
             try {
-                (view.getTag(android.R.id.content) as? ValueAnimator)?.cancel()
+                (view.getTag(R.id.pulse_animator) as? ValueAnimator)?.cancel()
                 if (view.isAttachedToWindow) windowManager.removeViewImmediate(view)
             } catch (e: Exception) {
                 Log.e(TAG, "Hide indicator failed", e)
@@ -140,7 +141,7 @@ class OverlayManager(private val context: Context) {
             }
             start()
         }
-        view.setTag(android.R.id.content, pulseAnimator)
+        view.setTag(R.id.pulse_animator, pulseAnimator)
     }
 
     // =====================================================
@@ -386,7 +387,7 @@ class OverlayManager(private val context: Context) {
 
     private fun forceRemoveView(view: View) {
         try {
-            (view.getTag(android.R.id.content) as? ValueAnimator)?.cancel()
+            (view.getTag(R.id.pulse_animator) as? ValueAnimator)?.cancel()
             if (view.isAttachedToWindow) {
                 if (view is FrameLayout) {
                     for (i in 0 until view.childCount) {

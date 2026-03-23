@@ -66,14 +66,14 @@ class SwipeAccessibilityService : AccessibilityService() {
 
         when (direction) {
             SwipeDirection.UP -> {
-                // Finger moves up = content scrolls up = swipe from bottom to top
-                startY = screenHeight * 0.65f
-                endY = startY - swipeLength
-            }
-            SwipeDirection.DOWN -> {
-                // Finger moves down = content scrolls down = swipe from top to bottom
+                // Page scrolls up (see content below) = finger moves down
                 startY = screenHeight * 0.35f
                 endY = startY + swipeLength
+            }
+            SwipeDirection.DOWN -> {
+                // Page scrolls down (see content above) = finger moves up
+                startY = screenHeight * 0.65f
+                endY = startY - swipeLength
             }
         }
 

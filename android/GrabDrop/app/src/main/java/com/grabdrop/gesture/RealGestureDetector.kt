@@ -29,8 +29,14 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
-import kotlin.math.abs
 
+/**
+ * Real-time gesture detector using MediaPipe for hand detection and TCN model for gesture classification.
+ *
+ * Detection flow:
+ * 1. IDLE stage: Detect hand presence (any hand gesture triggers wakeup)
+ * 2. WAKEUP stage: Use TCN model to classify gestures (grab/release/swipe_up/swipe_down/noise)
+ */
 class RealGestureDetector(
     private val context: Context,
     private val overlayManager: OverlayManager
@@ -41,6 +47,9 @@ class RealGestureDetector(
         private const val IDLE_LOG_INTERVAL_FRAMES = 10
         private const val WAKEUP_LOG_INTERVAL_FRAMES = 5
         private const val DEBUG_FRAME_INTERVAL_MS = 30_000L
+
+        // Confidence threshold for TCN model predictions
+        private const val CONFIDENCE_THRESHOLD = 0.5f
     }
 
     private val _events = MutableSharedFlow<GestureEvent>(extraBufferCapacity = 10)
@@ -62,32 +71,21 @@ class RealGestureDetector(
     private var actualRotation = 0
     private var sensorRotation = -1
 
+    // Detectors
     private var handDetector: HandLandmarkDetector? = null
+    private var gestureClassifier: GestureClassifier? = null
 
-    // Idle
-    private val idleWindow = ArrayDeque<HandState>()
+    // IDLE stage
+    private val idleWindow = ArrayDeque<Boolean>()  // true = hand detected
     private var idleFrameCount = 0
 
-    // Wakeup — grab/release
+    // WAKEUP stage
     private var wakeupStartTime = 0L
-    private var wakeupTriggerState = HandState.NONE
-    private var wakeupTargetState = HandState.NONE
-    private var consecutiveTargetFrames = 0
-    private var wakeupFrames = mutableListOf<HandState>()
     private var wakeupFrameCount = 0
-
-    // Wakeup — swipe tracking
-    private var swipeStartY = -1f
-    private var swipePreviousY = -1f
-    private var swipeConsecutiveUp = 0
-    private var swipeConsecutiveDown = 0
-    private var swipeCumulativeDisplacement = 0f
-    private val swipeYHistory = mutableListOf<Float>()
 
     // Cooldowns
     @Volatile private var lastFrameTime = 0L
     @Volatile private var lastGestureTime = 0L
-    @Volatile private var lastSwipeTime = 0L
 
     // Stats
     private val totalFrameCount = AtomicLong(0)
@@ -117,6 +115,15 @@ class RealGestureDetector(
                 } else {
                     addLog("❌ MediaPipe FAILED"); return@launch
                 }
+
+                gestureClassifier = GestureClassifier(context)
+                if (gestureClassifier?.isInitialized == true) {
+                    addLog("✅ TCN model loaded")
+                } else {
+                    addLog("⚠️ TCN model FAILED, will use fallback mode")
+                    // Continue without TCN - fallback to basic hand detection
+                }
+
                 startCamera()
             } catch (e: Exception) {
                 addLog("❌ Start failed: ${e.message}")
@@ -143,7 +150,9 @@ class RealGestureDetector(
         }
         try { cameraProvider?.unbindAll() } catch (_: Exception) {}
         try { handDetector?.close() } catch (_: Exception) {}
+        try { gestureClassifier?.close() } catch (_: Exception) {}
         handDetector = null
+        gestureClassifier = null
         overlayManager.hideWakeupIndicator()
         analysisExecutor.shutdown()
         scope?.cancel(); scope = null
@@ -181,7 +190,7 @@ class RealGestureDetector(
                 )
                 sensorRotation = camera?.cameraInfo?.sensorRotationDegrees ?: -1
                 addLog("📷 Camera bound! sensor=$sensorRotation")
-                addLog("👁️ IDLE — scanning at ~${Constants.IDLE_FPS}fps (swipe detection enabled)")
+                addLog("👁️ IDLE — scanning at ~${Constants.IDLE_FPS}fps")
             } catch (e: Exception) { addLog("❌ Camera bind failed: ${e.message}") }
         }
     }
@@ -276,231 +285,139 @@ class RealGestureDetector(
 
     private fun processIdle(detail: HandLandmarkDetector.DetectionDetail) {
         idleFrameCount++
-        idleWindow.addLast(detail.state)
+        val handDetected = detail.handsFound > 0
+        idleWindow.addLast(handDetected)
         while (idleWindow.size > Constants.IDLE_WINDOW_SIZE) idleWindow.removeFirst()
 
         if (isDebug && idleFrameCount % IDLE_LOG_INTERVAL_FRAMES == 0) {
-            val windowStr = idleWindow.joinToString("") { stateEmoji(it) }
-            val p = idleWindow.count { it == HandState.PALM }
-            val f = idleWindow.count { it == HandState.FIST }
-            addLog("👁️ IDLE #$idleFrameCount | $windowStr | P=$p F=$f | ${detail.summary()}")
+            // Show emoji based on hand state
+            val emoji = when {
+                !handDetected -> "·"
+                detail.state == HandState.PALM -> "🖐"
+                detail.state == HandState.FIST -> "✊"
+                else -> "✋"
+            }
+            val windowStr = idleWindow.joinToString("") { if (it) "✋" else "·" }
+            val handCount = idleWindow.count { it }
+            addLog("👁️ IDLE #$idleFrameCount $emoji | $windowStr | hand=$handCount/${Constants.IDLE_WINDOW_SIZE} | ${detail.summary()}")
         }
 
         if (idleWindow.size < Constants.IDLE_WINDOW_SIZE) return
 
-        val palmCount = idleWindow.count { it == HandState.PALM }
-        val fistCount = idleWindow.count { it == HandState.FIST }
-
-        when {
-            palmCount >= Constants.IDLE_TRIGGER_THRESHOLD ->
-                enterWakeup(HandState.PALM, HandState.FIST)
-            fistCount >= Constants.IDLE_TRIGGER_THRESHOLD ->
-                enterWakeup(HandState.FIST, HandState.PALM)
+        // Wake up when hand is detected in enough frames
+        val handDetectedCount = idleWindow.count { it }
+        if (handDetectedCount >= Constants.IDLE_TRIGGER_THRESHOLD) {
+            enterWakeup()
         }
     }
 
     // --- WAKEUP ---
 
-    private fun enterWakeup(triggerState: HandState, targetState: HandState) {
+    private fun enterWakeup() {
         val now = System.currentTimeMillis()
-        if (now - lastGestureTime < Constants.GRAB_COOLDOWN_MS &&
-            now - lastSwipeTime < Constants.SWIPE_COOLDOWN_MS) {
+        if (now - lastGestureTime < Constants.GRAB_COOLDOWN_MS) {
             if (isDebug) addLog("⏳ Wakeup suppressed (cooldown)")
             return
         }
 
         currentStage = Stage.WAKEUP
         wakeupStartTime = SystemClock.uptimeMillis()
-        wakeupTriggerState = triggerState
-        wakeupTargetState = targetState
-        consecutiveTargetFrames = 0
-        wakeupFrames.clear()
         wakeupFrameCount = 0
         idleWindow.clear()
         idleFrameCount = 0
 
-        // Reset swipe tracking
-        swipeStartY = -1f
-        swipePreviousY = -1f
-        swipeConsecutiveUp = 0
-        swipeConsecutiveDown = 0
-        swipeCumulativeDisplacement = 0f
-        swipeYHistory.clear()
+        // Reset gesture classifier window
+        gestureClassifier?.reset()
 
-        val te = if (triggerState == HandState.PALM) "🖐" else "✊"
-        val tge = if (targetState == HandState.FIST) "✊" else "🖐"
-        val motion = if (targetState == HandState.FIST) "GRAB" else "RELEASE"
+        addLog("🔔 WAKEUP! Hand detected — using TCN for gesture classification")
 
-        addLog("🔔 WAKEUP! $te → $tge ($motion) or ↑↓ swipe")
-
-        val indicator = when (targetState) {
-            HandState.FIST -> "✊"
-            HandState.PALM -> "🤚"
-            else -> "👋"
-        }
-        mainHandler.post { overlayManager.showWakeupIndicator(indicator) }
+        // Show unified palm indicator
+        mainHandler.post { overlayManager.showWakeupIndicator("🤚") }
     }
 
     private fun processWakeup(detail: HandLandmarkDetector.DetectionDetail, now: Long) {
         wakeupFrameCount++
-        wakeupFrames.add(detail.state)
 
         val elapsed = now - wakeupStartTime
-        val remaining = Constants.WAKEUP_DURATION_MS - elapsed
 
-        // ─── 1. Check SWIPE first (higher priority, faster response) ───
-        if (detail.handsFound > 0) {
-            val swipeEvent = checkSwipe(detail, now)
-            if (swipeEvent != null) {
-                addLog("✅ ${if (swipeEvent == GestureEvent.SwipeUp) "⬆️ SWIPE UP" else "⬇️ SWIPE DOWN"} CONFIRMED!")
-                lastSwipeTime = System.currentTimeMillis()
-                scope?.launch { _events.emit(swipeEvent) }
-                exitWakeup()
-                return
+        // Run TCN classification if hand is detected and classifier is available
+        if (detail.handsFound > 0 && detail.rawLandmarks != null && gestureClassifier?.isInitialized == true) {
+            val result = gestureClassifier?.addFrameAndClassify(detail.rawLandmarks)
+
+            // result is null until we have 30 frames (full window)
+            if (result != null && result.confidence >= CONFIDENCE_THRESHOLD) {
+                val gesture = result.gesture
+
+                // Only emit event if it's a valid gesture (not noise)
+                if (gesture != "noise") {
+                    val event = when (gesture) {
+                        "grab" -> GestureEvent.Grab
+                        "release" -> GestureEvent.Release
+                        "swipe_up" -> GestureEvent.SwipeUp
+                        "swipe_down" -> GestureEvent.SwipeDown
+                        else -> null
+                    }
+
+                    if (event != null) {
+                        val emoji = when (gesture) {
+                            "grab" -> "✊"
+                            "release" -> "🖐"
+                            "swipe_up" -> "⬆️"
+                            "swipe_down" -> "⬇️"
+                            else -> "?"
+                        }
+                        addLog("✅ $emoji ${gesture.uppercase()} detected! conf=${"%.2f".format(result.confidence)} validFrames=${result.validFrames}")
+
+                        lastGestureTime = System.currentTimeMillis()
+                        scope?.launch { _events.emit(event) }
+                        exitWakeup()
+                        return
+                    }
+                }
             }
-        }
 
-        // ─── 2. Check GRAB/RELEASE ───
-        if (detail.state == wakeupTargetState) {
-            consecutiveTargetFrames++
+            // Log progress
+            if (isDebug && wakeupFrameCount % WAKEUP_LOG_INTERVAL_FRAMES == 0) {
+                val remaining = Constants.WAKEUP_DURATION_MS - elapsed
+                val gestureInfo = if (result != null) {
+                    "${result.gesture}(${ "%.2f".format(result.confidence)}) v=${result.validFrames}"
+                } else {
+                    "collecting (need 15)..."
+                }
+                addLog("⏱️ WK #$wakeupFrameCount ${"%.1f".format(remaining / 1000.0)}s | $gestureInfo | ${detail.summary()}")
+            }
         } else {
-            consecutiveTargetFrames = 0
-        }
-
-        if (isDebug && (wakeupFrameCount % WAKEUP_LOG_INTERVAL_FRAMES == 0 || consecutiveTargetFrames > 0)) {
-            val se = stateEmoji(detail.state)
-            val pb = progressBar(consecutiveTargetFrames, Constants.WAKEUP_CONFIRM_FRAMES)
-            val swipeInfo = "dy=${"%.3f".format(swipeCumulativeDisplacement)} " +
-                    "↑=${swipeConsecutiveUp} ↓=${swipeConsecutiveDown}"
-            addLog("⏱️ WK #$wakeupFrameCount ${"%.1f".format(remaining / 1000.0)}s | " +
-                    "$se str=$consecutiveTargetFrames/${Constants.WAKEUP_CONFIRM_FRAMES} $pb | $swipeInfo")
+            if (isDebug && wakeupFrameCount % WAKEUP_LOG_INTERVAL_FRAMES == 0) {
+                val remaining = Constants.WAKEUP_DURATION_MS - elapsed
+                val classifierStatus = if (gestureClassifier?.isInitialized != true) "NO_TCN" else "no hand"
+                addLog("⏱️ WK #$wakeupFrameCount ${"%.1f".format(remaining / 1000.0)}s | $classifierStatus | ${detail.summary()}")
+            }
         }
 
         // Timeout
         if (elapsed > Constants.WAKEUP_DURATION_MS) {
-            if (isDebug) addLog("⌛ Timeout — ${buildWakeupSummary()}")
-            else addLog("⌛ WAKEUP timeout")
-            exitWakeup()
-            return
-        }
-
-        // Confirm grab/release
-        if (consecutiveTargetFrames >= Constants.WAKEUP_CONFIRM_FRAMES) {
-            val event = when (wakeupTargetState) {
-                HandState.FIST -> { addLog("✅ ✊ GRAB CONFIRMED!"); GestureEvent.Grab }
-                HandState.PALM -> { addLog("✅ 🖐 RELEASE CONFIRMED!"); GestureEvent.Release }
-                else -> null
-            }
-            if (event != null) {
-                lastGestureTime = System.currentTimeMillis()
-                scope?.launch { _events.emit(event) }
-            }
+            if (isDebug) addLog("⌛ WAKEUP timeout")
+            else addLog("⌛ Timeout")
             exitWakeup()
         }
     }
 
-    // ─── Swipe Detection ───
-
-    private fun checkSwipe(detail: HandLandmarkDetector.DetectionDetail, now: Long): GestureEvent? {
-        // Use swipe cooldown (shorter than grab cooldown)
-        if (System.currentTimeMillis() - lastSwipeTime < Constants.SWIPE_COOLDOWN_MS) return null
-
-        val currentY = detail.centerY
-        swipeYHistory.add(currentY)
-
-        // Initialize start position
-        if (swipeStartY < 0f) {
-            swipeStartY = currentY
-            swipePreviousY = currentY
-            return null
-        }
-
-        // Calculate frame-to-frame velocity
-        val frameVelocity = currentY - swipePreviousY
-        // Positive velocity = moving down in image coords
-        // For front camera mirrored: Y-axis stays the same (top=0, bottom=1)
-        // So positive velocity = hand moving down on screen
-
-        swipePreviousY = currentY
-
-        // Track cumulative displacement from start
-        swipeCumulativeDisplacement = currentY - swipeStartY
-
-        // Count consecutive directional frames
-        if (frameVelocity < -Constants.SWIPE_MIN_VELOCITY) {
-            // Moving UP
-            swipeConsecutiveUp++
-            swipeConsecutiveDown = 0
-        } else if (frameVelocity > Constants.SWIPE_MIN_VELOCITY) {
-            // Moving DOWN
-            swipeConsecutiveDown++
-            swipeConsecutiveUp = 0
-        } else {
-            // Not enough movement — but don't reset completely
-            // Allow small pauses in motion
-        }
-
-        // Check if swipe is confirmed
-        val totalDisplacement = abs(swipeCumulativeDisplacement)
-        val hasEnoughFrames = swipeConsecutiveUp >= Constants.SWIPE_CONFIRM_FRAMES ||
-                swipeConsecutiveDown >= Constants.SWIPE_CONFIRM_FRAMES
-        val hasEnoughDisplacement = totalDisplacement >= Constants.SWIPE_DISPLACEMENT_THRESHOLD
-
-        // Also check via Y history: overall trend
-        if (swipeYHistory.size >= Constants.SWIPE_CONFIRM_FRAMES) {
-            val recentY = swipeYHistory.takeLast(Constants.SWIPE_CONFIRM_FRAMES)
-            val startAvg = recentY.take(2).average().toFloat()
-            val endAvg = recentY.takeLast(2).average().toFloat()
-            val trendDisplacement = endAvg - startAvg
-
-            if (abs(trendDisplacement) >= Constants.SWIPE_DISPLACEMENT_THRESHOLD) {
-                return if (trendDisplacement < 0) GestureEvent.SwipeUp
-                else GestureEvent.SwipeDown
-            }
-        }
-
-        if (hasEnoughFrames && hasEnoughDisplacement) {
-            return if (swipeCumulativeDisplacement < 0) GestureEvent.SwipeUp
-            else GestureEvent.SwipeDown
-        }
-
-        return null
-    }
-
-    // ─── Wakeup Exit ───
+    // --- Wakeup Exit ---
 
     private fun exitWakeup() {
         currentStage = Stage.IDLE
-        consecutiveTargetFrames = 0
-        wakeupFrames.clear()
         wakeupFrameCount = 0
         idleWindow.clear()
         idleFrameCount = 0
-        swipeYHistory.clear()
+        gestureClassifier?.reset()
         mainHandler.post { overlayManager.hideWakeupIndicator() }
         addLog("👁️ Back to IDLE")
     }
 
-    private fun buildWakeupSummary(): String {
-        val total = wakeupFrames.size
-        val p = wakeupFrames.count { it == HandState.PALM }
-        val f = wakeupFrames.count { it == HandState.FIST }
-        val timeline = wakeupFrames.takeLast(30).joinToString("") { stateEmoji(it) }
-        return "total=$total 🖐=$p ✊=$f dy=${"%.3f".format(swipeCumulativeDisplacement)} | $timeline"
-    }
-
-    private fun stateEmoji(s: HandState) = when (s) {
-        HandState.PALM -> "🖐"; HandState.FIST -> "✊"
-        HandState.UNKNOWN -> "❓"; HandState.NONE -> "·"
-    }
-
-    private fun progressBar(current: Int, max: Int): String {
-        val f = current.coerceAtMost(max); val e = max - f
-        return "[" + "█".repeat(f) + "░".repeat(e) + "]"
-    }
-
     private fun addLog(msg: String) {
         val t = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-        ServiceState.addEvent("$t $msg")
+        val fullMsg = "$t $msg"
+        Log.d(TAG, fullMsg)
+        ServiceState.addEvent(fullMsg)
     }
 }

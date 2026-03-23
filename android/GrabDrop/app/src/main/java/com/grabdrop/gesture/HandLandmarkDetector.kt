@@ -55,7 +55,9 @@ class HandLandmarkDetector(context: Context) {
         val centerY: Float = 0.5f,
         // Wrist position (normalized 0-1)
         val wristX: Float = 0.5f,
-        val wristY: Float = 0.5f
+        val wristY: Float = 0.5f,
+        // Raw landmarks: 21 points × 3 coords = 63 values
+        val rawLandmarks: FloatArray? = null
     ) {
         fun summary(): String {
             if (handsFound == 0) return "NO_HAND"
@@ -179,6 +181,14 @@ class HandLandmarkDetector(context: Context) {
             else -> HandState.UNKNOWN
         }
 
+        // Extract raw landmarks (21 × 3 = 63 values)
+        val rawLandmarks = FloatArray(21 * 3)
+        for (i in 0 until 21) {
+            rawLandmarks[i * 3] = landmarks[i].x()
+            rawLandmarks[i * 3 + 1] = landmarks[i].y()
+            rawLandmarks[i * 3 + 2] = landmarks[i].z()
+        }
+
         return DetectionDetail(
             state = state,
             fingerRatios = ratios,
@@ -190,7 +200,8 @@ class HandLandmarkDetector(context: Context) {
             centerX = centerX,
             centerY = centerY,
             wristX = wrist.x(),
-            wristY = wrist.y()
+            wristY = wrist.y(),
+            rawLandmarks = rawLandmarks
         )
     }
 
