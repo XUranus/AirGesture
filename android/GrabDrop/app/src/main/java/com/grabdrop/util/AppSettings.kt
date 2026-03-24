@@ -14,6 +14,9 @@ object AppSettings {
     private const val PREFS_NAME = "grabdrop_settings"
 
     // ── Keys ──────────────────────────────────────────────────────
+    // Detection Method
+    const val KEY_USE_NEURAL_NETWORK        = "use_neural_network"
+
     // Gesture Timing
     const val KEY_IDLE_FPS                  = "idle_fps"
     const val KEY_WAKEUP_FRAME_INTERVAL_MS  = "wakeup_frame_interval_ms"
@@ -41,6 +44,7 @@ object AppSettings {
     const val KEY_GRAB_COOLDOWN_MS          = "grab_cooldown_ms"
 
     // ── Defaults (mirror original Constants values) ──────────────
+    const val DEF_USE_NEURAL_NETWORK        = true
     const val DEF_IDLE_FPS                  = 10
     const val DEF_WAKEUP_FRAME_INTERVAL_MS  = 33L
     const val DEF_IDLE_WINDOW_SIZE          = 10
@@ -72,6 +76,10 @@ object AppSettings {
         prefs ?: throw IllegalStateException("AppSettings.init() was not called")
 
     // ── Typed Getters ────────────────────────────────────────────
+
+    // Detection method
+    val useNeuralNetwork: Boolean
+        get() = p().getBoolean(KEY_USE_NEURAL_NETWORK, DEF_USE_NEURAL_NETWORK)
 
     // Gesture timing
     val idleFps: Int
@@ -125,6 +133,7 @@ object AppSettings {
     fun setLong(key: String, value: Long)     = p().edit().putLong(key, value).apply()
     fun setFloat(key: String, value: Float)   = p().edit().putFloat(key, value).apply()
     fun setString(key: String, value: String) = p().edit().putString(key, value).apply()
+    fun setBoolean(key: String, value: Boolean) = p().edit().putBoolean(key, value).apply()
 
     /** Reset all settings to defaults. */
     fun resetAll() {

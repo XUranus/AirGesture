@@ -101,6 +101,11 @@ fun SettingsScreen(
                 }
             }
 
+            // ── Detection Method ──
+            DetectionMethodSection(resetTrigger = resetTrigger)
+
+            Spacer(Modifier.height(8.dp))
+
             // ── Gesture Timing ──
             SettingsSection(
                 title = "Gesture Timing",
@@ -150,7 +155,7 @@ fun SettingsScreen(
                 )
                 IntSettingItem(
                     label = "Confirmation Frames",
-                    description = "Consecutive frames needed to confirm a grab or release gesture. Higher = fewer false triggers.",
+                    description = "Consecutive frames needed to confirm a grab or release gesture (Legacy mode only). Higher = fewer false triggers.",
                     key = AppSettings.KEY_WAKEUP_CONFIRM_FRAMES,
                     default = AppSettings.DEF_WAKEUP_CONFIRM_FRAMES,
                     min = 1, max = 30,
@@ -212,7 +217,7 @@ fun SettingsScreen(
             ) {
                 FloatSettingItem(
                     label = "Swipe Distance Threshold",
-                    description = "Minimum hand movement (0-1 normalized) to register a swipe. Lower = more sensitive.",
+                    description = "Minimum hand movement (0-1 normalized) to register a swipe. Lower = more sensitive. (Legacy mode only)",
                     key = AppSettings.KEY_SWIPE_DISPLACEMENT,
                     default = AppSettings.DEF_SWIPE_DISPLACEMENT,
                     min = 0.01f, max = 0.5f,
@@ -220,7 +225,7 @@ fun SettingsScreen(
                 )
                 IntSettingItem(
                     label = "Swipe Confirmation Frames",
-                    description = "Consecutive frames of directional movement needed to confirm a swipe.",
+                    description = "Consecutive frames of directional movement needed to confirm a swipe. (Legacy mode only)",
                     key = AppSettings.KEY_SWIPE_CONFIRM_FRAMES,
                     default = AppSettings.DEF_SWIPE_CONFIRM_FRAMES,
                     min = 1, max = 20,
@@ -228,7 +233,7 @@ fun SettingsScreen(
                 )
                 FloatSettingItem(
                     label = "Minimum Swipe Speed",
-                    description = "Minimum per-frame velocity to count as directional movement. Lower = more sensitive.",
+                    description = "Minimum per-frame velocity to count as directional movement. Lower = more sensitive. (Legacy mode only)",
                     key = AppSettings.KEY_SWIPE_MIN_VELOCITY,
                     default = AppSettings.DEF_SWIPE_MIN_VELOCITY,
                     min = 0.001f, max = 0.1f,
@@ -312,6 +317,149 @@ fun SettingsScreen(
     }
 }
 
+// ── Detection Method Section ─────────────────────────────────────
+
+@Composable
+private fun DetectionMethodSection(resetTrigger: Int) {
+    var useNN by remember(resetTrigger) {
+        mutableStateOf(AppSettings.p().getBoolean(AppSettings.KEY_USE_NEURAL_NETWORK, AppSettings.DEF_USE_NEURAL_NETWORK))
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = DarkCard)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.Psychology,
+                    null,
+                    tint = Color(0xFFAB47BC),
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    "Detection Method",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFFAB47BC)
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // Neural Network option
+            DetectionMethodOption(
+                title = "Neural Network (TCN)",
+                description = "Uses a trained deep learning model to classify gestures. More accurate across different hand shapes and lighting conditions.",
+                selected = useNN,
+                onClick = {
+                    useNN = true
+                    AppSettings.setBoolean(AppSettings.KEY_USE_NEURAL_NETWORK, true)
+                }
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            // Legacy option
+            DetectionMethodOption(
+                title = "Legacy (Rule-based)",
+                description = "Uses hand landmark ratios and heuristic rules to detect gestures. No extra model required. Allows fine-tuning via Hand Recognition and Swipe Detection settings.",
+                selected = !useNN,
+                onClick = {
+                    useNN = false
+                    AppSettings.setBoolean(AppSettings.KEY_USE_NEURAL_NETWORK, false)
+                }
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            // Note about fallback
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        color = Color(0xFF1B5E20).copy(alpha = 0.2f),
+                        shape = RoundedCornerShape(8.dp)
+                    )
+                    .padding(10.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Icon(
+                    Icons.Default.Shield,
+                    null,
+                    tint = GreenActive,
+                    modifier = Modifier.size(16.dp).padding(top = 2.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "If the neural network model fails to load, the app will automatically fall back to legacy detection.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = GreenActive,
+                    lineHeight = 16.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetectionMethodOption(
+    title: String,
+    description: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val borderColor = if (selected) Color(0xFFAB47BC) else TextSecondary.copy(alpha = 0.3f)
+    val bgColor = if (selected) Color(0xFFAB47BC).copy(alpha = 0.1f) else Color.Transparent
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(containerColor = bgColor),
+        border = CardDefaults.outlinedCardBorder().let {
+            androidx.compose.foundation.BorderStroke(
+                width = if (selected) 1.5.dp else 0.5.dp,
+                color = borderColor
+            )
+        }
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            RadioButton(
+                selected = selected,
+                onClick = onClick,
+                colors = RadioButtonDefaults.colors(
+                    selectedColor = Color(0xFFAB47BC),
+                    unselectedColor = TextSecondary
+                ),
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(Modifier.width(10.dp))
+            Column {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (selected) TextPrimary else TextSecondary
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    lineHeight = 16.sp
+                )
+            }
+        }
+    }
+}
+
 // ── Collapsible Section ──────────────────────────────────────────
 
 @Composable
@@ -319,7 +467,7 @@ private fun SettingsSection(
     title: String,
     icon: ImageVector,
     color: Color,
-    key: Int, // used to force recomposition
+    key: Int,
     content: @Composable ColumnScope.() -> Unit
 ) {
     var expanded by remember(key) { mutableStateOf(true) }
@@ -330,7 +478,6 @@ private fun SettingsSection(
         colors = CardDefaults.cardColors(containerColor = DarkCard)
     ) {
         Column {
-            // Header
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -354,7 +501,6 @@ private fun SettingsSection(
                 )
             }
 
-            // Content
             AnimatedVisibility(visible = expanded) {
                 Column(
                     modifier = Modifier.padding(
