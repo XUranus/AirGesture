@@ -14,7 +14,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List
+from typing import List, Optional
 
 import mediapipe as mp
 import numpy as np
@@ -47,6 +47,8 @@ class DetectionDetail:
     center_y: float = 0.5
     wrist_x: float = 0.5
     wrist_y: float = 0.5
+    # Raw landmarks: 21 points x 3 coords = 63 values (None if no hand)
+    raw_landmarks: Optional[np.ndarray] = None
 
     def summary(self) -> str:
         if self.hands_found == 0:
@@ -160,6 +162,12 @@ class HandLandmarkDetector:
         else:
             state = HandState.UNKNOWN
 
+        # Extract raw landmarks (21 x 3 = 63 values) for TCN input
+        raw_landmarks = np.array(
+            [coord for lm in landmarks[:21] for coord in (lm.x, lm.y, lm.z)],
+            dtype=np.float32,
+        )
+
         return DetectionDetail(
             state=state,
             finger_ratios=ratios,
@@ -172,6 +180,7 @@ class HandLandmarkDetector:
             center_y=cy,
             wrist_x=wrist.x,
             wrist_y=wrist.y,
+            raw_landmarks=raw_landmarks,
         )
 
     @staticmethod

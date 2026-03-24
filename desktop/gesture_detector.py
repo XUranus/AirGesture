@@ -6,11 +6,24 @@
 #*   File:         gesture_detector.py
 #*   Author:       XUranus
 #*   Date:         2026-03-14
-#*   Description:  
+#*   Description:  Dual-mode gesture detector (Neural Network + Legacy).
 #*
 #================================================================*/
 
-# /GrabDrop-Desktop/gesture_detector.py
+"""
+Real-time gesture detector supporting two detection backends:
+
+- **Neural Network (TCN)**: Uses a Temporal Convolutional Network via ONNX Runtime
+  for 5-class classification (grab/release/swipe_up/swipe_down/noise).
+
+- **Legacy (rule-based)**: Uses hand landmark ratios for palm/fist classification
+  and frame-to-frame velocity for swipe detection.
+
+The user selects the preferred mode via ``config.DETECTION_METHOD``.
+If TCN mode is selected but the model fails to load, the detector
+automatically falls back to legacy mode.
+"""
+
 import logging
 import time
 import threading
@@ -23,6 +36,7 @@ import numpy as np
 
 import config
 from hand_landmark import HandLandmarkDetector, HandState, DetectionDetail
+from gesture_classifier import GestureClassifier
 
 logger = logging.getLogger("GestureDetector")
 
@@ -39,6 +53,11 @@ class Stage(Enum):
     WAKEUP = "WAKEUP"
 
 
+class DetectionMode(Enum):
+    NEURAL_NETWORK = "neural_network"
+    LEGACY = "legacy"
+
+
 class GestureDetector:
     def __init__(self):
         self.on_gesture: Optional[Callable[[GestureEvent], None]] = None
@@ -47,24 +66,31 @@ class GestureDetector:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._detector: Optional[HandLandmarkDetector] = None
+        self._classifier: Optional[GestureClassifier] = None
         self._cap: Optional[cv2.VideoCapture] = None
+
+        # Active detection mode (resolved at start)
+        self._active_mode = DetectionMode.LEGACY
 
         # Stage
         self._stage = Stage.IDLE
 
-        # Idle state
-        self._idle_window: deque = deque(maxlen=config.IDLE_WINDOW_SIZE)
+        # ── Shared IDLE state ─────────────────────────────────────
+        self._idle_window_states: deque = deque(maxlen=config.IDLE_WINDOW_SIZE)  # legacy
+        self._idle_window_hand: deque = deque(maxlen=config.IDLE_WINDOW_SIZE)    # NN
         self._idle_frame_count = 0
 
-        # Wakeup state — grab/release
+        # ── Shared WAKEUP state ───────────────────────────────────
         self._wakeup_start_time = 0.0
+        self._wakeup_frame_count = 0
+
+        # ── Legacy WAKEUP state ───────────────────────────────────
         self._wakeup_trigger_state = HandState.NONE
         self._wakeup_target_state = HandState.NONE
         self._consecutive_target = 0
         self._wakeup_frames: list = []
-        self._wakeup_frame_count = 0
 
-        # Wakeup state — swipe tracking
+        # Legacy swipe tracking
         self._swipe_start_y = -1.0
         self._swipe_previous_y = -1.0
         self._swipe_consecutive_up = 0
@@ -72,11 +98,11 @@ class GestureDetector:
         self._swipe_cumulative = 0.0
         self._swipe_y_history: list = []
 
-        # Cooldowns
+        # ── Cooldowns ─────────────────────────────────────────────
         self._last_gesture_time = 0.0
         self._last_swipe_time = 0.0
 
-        # Stats
+        # ── Stats ─────────────────────────────────────────────────
         self._total_frames = 0
         self._camera_frames = 0
         self._last_stats_time = 0.0
@@ -98,16 +124,51 @@ class GestureDetector:
         if self._detector:
             self._detector.close()
             self._detector = None
+        if self._classifier:
+            self._classifier.close()
+            self._classifier = None
         logger.info("Gesture detector stopped")
 
-    def _run(self):
-        logger.info("Initializing camera and MediaPipe...")
+    # ─────────────────────────────────────────────────────────────
+    # Main loop
+    # ─────────────────────────────────────────────────────────────
 
+    def _run(self):
+        logger.info("Initializing camera and detectors...")
+
+        # 1. MediaPipe (required for both modes)
         self._detector = HandLandmarkDetector()
         if not self._detector.is_initialized:
             logger.error("HandLandmarkDetector failed — aborting")
             return
 
+        # 2. Decide detection mode
+        user_wants_nn = config.DETECTION_METHOD == "neural_network"
+        if user_wants_nn:
+            try:
+                self._classifier = GestureClassifier()
+                if self._classifier.is_initialized:
+                    self._active_mode = DetectionMode.NEURAL_NETWORK
+                    logger.info("TCN model loaded — using Neural Network detection")
+                else:
+                    self._active_mode = DetectionMode.LEGACY
+                    logger.warning(
+                        "TCN model failed to initialize — "
+                        "falling back to Legacy detection"
+                    )
+                    self._classifier = None
+            except Exception as e:
+                self._active_mode = DetectionMode.LEGACY
+                logger.warning(
+                    f"TCN model load error: {e} — "
+                    f"falling back to Legacy detection"
+                )
+                self._classifier = None
+        else:
+            self._active_mode = DetectionMode.LEGACY
+            logger.info("Using Legacy (rule-based) detection")
+
+        # 3. Camera
         self._cap = cv2.VideoCapture(config.CAMERA_INDEX)
         if not self._cap.isOpened():
             for idx in range(4):
@@ -129,8 +190,11 @@ class GestureDetector:
         actual_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = self._cap.get(cv2.CAP_PROP_FPS)
 
-        logger.info(f"📷 Camera opened: {actual_w}x{actual_h} @ {fps:.0f}fps")
-        logger.info(f"👁️ IDLE stage — scanning at ~{config.IDLE_FPS}fps (swipe+grab+release)")
+        mode_label = self._active_mode.value.replace("_", " ").title()
+        logger.info(f"Camera opened: {actual_w}x{actual_h} @ {fps:.0f}fps")
+        logger.info(
+            f"IDLE — scanning at ~{config.IDLE_FPS}fps ({mode_label})"
+        )
 
         self._last_stats_time = time.time()
         last_frame_time = 0.0
@@ -180,52 +244,112 @@ class GestureDetector:
             if now - self._last_stats_time > 10:
                 self._last_stats_time = now
                 logger.info(
-                    f"📊 Stats: camera={self._camera_frames} "
+                    f"Stats: camera={self._camera_frames} "
                     f"processed={self._total_frames} "
-                    f"stage={self._stage.value}"
+                    f"stage={self._stage.value} "
+                    f"mode={self._active_mode.value}"
                 )
 
         if self._cap:
             self._cap.release()
         if self._detector:
             self._detector.close()
+        if self._classifier:
+            self._classifier.close()
 
-    # ─── IDLE ───
+    # ─────────────────────────────────────────────────────────────
+    # IDLE
+    # ─────────────────────────────────────────────────────────────
 
     def _process_idle(self, detail: DetectionDetail):
         self._idle_frame_count += 1
-        self._idle_window.append(detail.state)
+
+        if self._active_mode == DetectionMode.NEURAL_NETWORK:
+            self._process_idle_tcn(detail)
+        else:
+            self._process_idle_legacy(detail)
+
+    def _process_idle_tcn(self, detail: DetectionDetail):
+        """TCN IDLE: wake up when any hand is seen consistently."""
+        hand_detected = detail.hands_found > 0
+        self._idle_window_hand.append(hand_detected)
 
         if self._idle_frame_count % 10 == 0:
-            window_str = "".join(self._state_emoji(s) for s in self._idle_window)
-            palm_n = sum(1 for s in self._idle_window if s == HandState.PALM)
-            fist_n = sum(1 for s in self._idle_window if s == HandState.FIST)
-            none_n = sum(1 for s in self._idle_window if s == HandState.NONE)
-            unk_n = sum(1 for s in self._idle_window if s == HandState.UNKNOWN)
-
+            window_str = "".join("H" if h else "." for h in self._idle_window_hand)
+            hand_count = sum(self._idle_window_hand)
             logger.info(
-                f"👁️ IDLE #{self._idle_frame_count} | {window_str} | "
-                f"P={palm_n} F={fist_n} N={none_n} U={unk_n} | "
-                f"det: {detail.summary()}"
+                f"IDLE #{self._idle_frame_count} | {window_str} | "
+                f"hand={hand_count}/{config.IDLE_WINDOW_SIZE} | "
+                f"{detail.summary()}"
             )
 
-        if len(self._idle_window) < config.IDLE_WINDOW_SIZE:
+        if len(self._idle_window_hand) < config.IDLE_WINDOW_SIZE:
             return
 
-        palm_count = sum(1 for s in self._idle_window if s == HandState.PALM)
-        fist_count = sum(1 for s in self._idle_window if s == HandState.FIST)
+        hand_count = sum(self._idle_window_hand)
+        if hand_count >= config.IDLE_TRIGGER_THRESHOLD:
+            self._enter_wakeup_tcn()
+
+    def _process_idle_legacy(self, detail: DetectionDetail):
+        """Legacy IDLE: detect palm or fist via rule-based classification."""
+        self._idle_window_states.append(detail.state)
+
+        if self._idle_frame_count % 10 == 0:
+            window_str = "".join(
+                self._state_emoji(s) for s in self._idle_window_states
+            )
+            palm_n = sum(1 for s in self._idle_window_states if s == HandState.PALM)
+            fist_n = sum(1 for s in self._idle_window_states if s == HandState.FIST)
+            logger.info(
+                f"IDLE #{self._idle_frame_count} | {window_str} | "
+                f"P={palm_n} F={fist_n} | {detail.summary()}"
+            )
+
+        if len(self._idle_window_states) < config.IDLE_WINDOW_SIZE:
+            return
+
+        palm_count = sum(
+            1 for s in self._idle_window_states if s == HandState.PALM
+        )
+        fist_count = sum(
+            1 for s in self._idle_window_states if s == HandState.FIST
+        )
 
         if palm_count >= config.IDLE_TRIGGER_THRESHOLD:
-            self._enter_wakeup(HandState.PALM, HandState.FIST)
+            self._enter_wakeup_legacy(HandState.PALM, HandState.FIST)
         elif fist_count >= config.IDLE_TRIGGER_THRESHOLD:
-            self._enter_wakeup(HandState.FIST, HandState.PALM)
+            self._enter_wakeup_legacy(HandState.FIST, HandState.PALM)
 
-    # ─── ENTER WAKEUP ───
+    # ─────────────────────────────────────────────────────────────
+    # WAKEUP — enter
+    # ─────────────────────────────────────────────────────────────
 
-    def _enter_wakeup(self, trigger: HandState, target: HandState):
+    def _enter_wakeup_tcn(self):
         now = time.time()
         if now - self._last_gesture_time < config.GRAB_COOLDOWN_S:
-            logger.info("⏳ Wakeup suppressed — cooldown")
+            logger.info("Wakeup suppressed (cooldown)")
+            return
+
+        self._stage = Stage.WAKEUP
+        self._wakeup_start_time = time.time()
+        self._wakeup_frame_count = 0
+        self._idle_window_hand.clear()
+        self._idle_frame_count = 0
+
+        if self._classifier:
+            self._classifier.reset()
+
+        logger.info(
+            "WAKEUP! Hand detected — classifying with Neural Network..."
+        )
+        if self.on_stage_change:
+            self.on_stage_change("WAKEUP", "🤚")
+
+    def _enter_wakeup_legacy(self, trigger: HandState, target: HandState):
+        now = time.time()
+        if (now - self._last_gesture_time < config.GRAB_COOLDOWN_S
+                and now - self._last_swipe_time < config.SWIPE_COOLDOWN_S):
+            logger.info("Wakeup suppressed (cooldown)")
             return
 
         self._stage = Stage.WAKEUP
@@ -235,7 +359,7 @@ class GestureDetector:
         self._consecutive_target = 0
         self._wakeup_frames = []
         self._wakeup_frame_count = 0
-        self._idle_window.clear()
+        self._idle_window_states.clear()
         self._idle_frame_count = 0
 
         # Reset swipe state
@@ -251,34 +375,106 @@ class GestureDetector:
         motion = "GRAB" if target == HandState.FIST else "RELEASE"
 
         logger.info(
-            f"🔔 WAKEUP! Detected {trigger_e} — "
-            f"watching 2s for {trigger_e}→{target_e} ({motion}) or ↑↓ swipe"
+            f"WAKEUP! Detected {trigger_e} — "
+            f"watching {config.WAKEUP_DURATION_S}s for "
+            f"{trigger_e} -> {target_e} ({motion}) or swipe"
         )
 
         indicator = "✊" if target == HandState.FIST else "🤚"
         if self.on_stage_change:
             self.on_stage_change("WAKEUP", indicator)
 
-    # ─── PROCESS WAKEUP ───
+    # ─────────────────────────────────────────────────────────────
+    # WAKEUP — process
+    # ─────────────────────────────────────────────────────────────
 
     def _process_wakeup(self, detail: DetectionDetail):
         self._wakeup_frame_count += 1
-        self._wakeup_frames.append(detail.state)
 
+        if self._active_mode == DetectionMode.NEURAL_NETWORK:
+            self._process_wakeup_tcn(detail)
+        else:
+            self._process_wakeup_legacy(detail)
+
+    # ── TCN wakeup ────────────────────────────────────────────────
+
+    def _process_wakeup_tcn(self, detail: DetectionDetail):
+        elapsed = time.time() - self._wakeup_start_time
+
+        if (detail.hands_found > 0
+                and detail.raw_landmarks is not None
+                and self._classifier is not None
+                and self._classifier.is_initialized):
+
+            result = self._classifier.add_frame_and_classify(
+                detail.raw_landmarks
+            )
+
+            if (result is not None
+                    and result.confidence >= config.TCN_CONFIDENCE_THRESHOLD
+                    and result.gesture != "noise"):
+
+                event = {
+                    "grab": GestureEvent.GRAB,
+                    "release": GestureEvent.RELEASE,
+                    "swipe_up": GestureEvent.SWIPE_UP,
+                    "swipe_down": GestureEvent.SWIPE_DOWN,
+                }.get(result.gesture)
+
+                if event is not None:
+                    logger.info(
+                        f"{result.gesture.upper()} detected! "
+                        f"conf={result.confidence:.2f} "
+                        f"frames={result.valid_frames}"
+                    )
+                    self._last_gesture_time = time.time()
+                    self._exit_wakeup()
+                    self._fire_gesture(event)
+                    return
+
+            # Progress logging
+            if self._wakeup_frame_count % 5 == 0:
+                remaining = config.WAKEUP_DURATION_S - elapsed
+                if result is not None:
+                    info = (
+                        f"{result.gesture}({result.confidence:.2f}) "
+                        f"v={result.valid_frames}"
+                    )
+                else:
+                    info = "collecting..."
+                logger.info(
+                    f"WK #{self._wakeup_frame_count} "
+                    f"{remaining:.1f}s | {info} | {detail.summary()}"
+                )
+        else:
+            if self._wakeup_frame_count % 5 == 0:
+                remaining = config.WAKEUP_DURATION_S - elapsed
+                logger.info(
+                    f"WK #{self._wakeup_frame_count} "
+                    f"{remaining:.1f}s | no hand | {detail.summary()}"
+                )
+
+        if elapsed > config.WAKEUP_DURATION_S:
+            logger.info("WAKEUP timeout")
+            self._exit_wakeup()
+
+    # ── Legacy wakeup ─────────────────────────────────────────────
+
+    def _process_wakeup_legacy(self, detail: DetectionDetail):
+        self._wakeup_frames.append(detail.state)
         elapsed = time.time() - self._wakeup_start_time
         remaining = config.WAKEUP_DURATION_S - elapsed
 
-        # ─── 1. Check SWIPE (only after a few warmup frames) ───
+        # 1. Check swipe
         swipe_event = None
         if detail.hands_found > 0 and self._wakeup_frame_count > 3:
-            swipe_event = self._check_swipe(detail)
+            swipe_event = self._check_swipe_legacy(detail)
 
         if swipe_event is not None:
-            arrow = "⬆️" if swipe_event == GestureEvent.SWIPE_UP else "⬇️"
+            arrow = "UP" if swipe_event == GestureEvent.SWIPE_UP else "DOWN"
             logger.info(
-                f"✅ {arrow} SWIPE "
-                f"{'UP' if swipe_event == GestureEvent.SWIPE_UP else 'DOWN'} "
-                f"CONFIRMED! (disp={self._swipe_cumulative:.3f})"
+                f"SWIPE {arrow} CONFIRMED! "
+                f"(disp={self._swipe_cumulative:.3f})"
             )
             self._last_swipe_time = time.time()
             self._last_gesture_time = time.time()
@@ -286,116 +482,87 @@ class GestureDetector:
             self._fire_gesture(swipe_event)
             return
 
-        # ─── 2. Check GRAB/RELEASE ───
+        # 2. Check grab/release
         if detail.state == self._wakeup_target_state:
             self._consecutive_target += 1
         else:
-            if self._consecutive_target > 0:
-                logger.debug(
-                    f"Streak broken at {self._consecutive_target} "
-                    f"(got {detail.state.value}, need {self._wakeup_target_state.value})"
-                )
             self._consecutive_target = 0
 
-        # ─── Logging ───
+        # Logging
         if (self._wakeup_frame_count % 5 == 0
-                or self._consecutive_target > 0
-                or swipe_event is not None):
+                or self._consecutive_target > 0):
             state_e = self._state_emoji(detail.state)
             progress = self._progress_bar(
                 self._consecutive_target, config.WAKEUP_CONFIRM_FRAMES
             )
             swipe_info = (
                 f"dy={self._swipe_cumulative:.3f} "
-                f"↑={self._swipe_consecutive_up} "
-                f"↓={self._swipe_consecutive_down}"
+                f"up={self._swipe_consecutive_up} "
+                f"dn={self._swipe_consecutive_down}"
             )
             logger.info(
-                f"⏱️ WK #{self._wakeup_frame_count} "
-                f"{remaining:.1f}s | {state_e} "
-                f"str={self._consecutive_target}/"
-                f"{config.WAKEUP_CONFIRM_FRAMES} "
-                f"{progress} | {swipe_info} | "
-                f"{detail.summary()}"
+                f"WK #{self._wakeup_frame_count} {remaining:.1f}s | "
+                f"{state_e} str={self._consecutive_target}/"
+                f"{config.WAKEUP_CONFIRM_FRAMES} {progress} | "
+                f"{swipe_info} | {detail.summary()}"
             )
 
-        # ─── 3. Timeout ───
+        # 3. Timeout
         if elapsed > config.WAKEUP_DURATION_S:
             summary = self._wakeup_summary()
-            logger.info(f"⌛ WAKEUP timeout — no gesture. {summary}")
+            logger.info(f"WAKEUP timeout — {summary}")
             self._exit_wakeup()
             return
 
-        # ─── 4. Confirm GRAB/RELEASE ───
+        # 4. Confirm
         if self._consecutive_target >= config.WAKEUP_CONFIRM_FRAMES:
             if self._wakeup_target_state == HandState.FIST:
-                logger.info("✅ ✊ GRAB CONFIRMED! (palm→fist)")
+                logger.info("GRAB CONFIRMED! (palm -> fist)")
                 event = GestureEvent.GRAB
             else:
-                logger.info("✅ 🖐 RELEASE CONFIRMED! (fist→palm)")
+                logger.info("RELEASE CONFIRMED! (fist -> palm)")
                 event = GestureEvent.RELEASE
 
             self._last_gesture_time = time.time()
             self._exit_wakeup()
             self._fire_gesture(event)
 
-    # ─── SWIPE DETECTION ───
+    # ── Legacy swipe detection ────────────────────────────────────
 
-    def _check_swipe(self, detail: DetectionDetail) -> Optional[GestureEvent]:
-        # Cooldown
+    def _check_swipe_legacy(
+        self, detail: DetectionDetail
+    ) -> Optional[GestureEvent]:
         now = time.time()
         if now - self._last_swipe_time < config.SWIPE_COOLDOWN_S:
             return None
 
-        # Get hand center Y position
-        try:
-            current_y = detail.center_y
-        except AttributeError:
-            # Fallback if DetectionDetail doesn't have center_y
-            logger.debug("DetectionDetail missing center_y")
-            return None
-
+        current_y = detail.center_y
         self._swipe_y_history.append(current_y)
 
-        # Initialize start position
         if self._swipe_start_y < 0:
             self._swipe_start_y = current_y
             self._swipe_previous_y = current_y
             return None
 
-        # Frame-to-frame velocity
-        # In image coords: Y=0 is top, Y=1 is bottom
-        # frame_velocity > 0 means hand moving DOWN in image
-        # frame_velocity < 0 means hand moving UP in image
         frame_velocity = current_y - self._swipe_previous_y
         self._swipe_previous_y = current_y
-
-        # Cumulative displacement from start
         self._swipe_cumulative = current_y - self._swipe_start_y
 
-        # Count consecutive directional frames
         if frame_velocity < -config.SWIPE_MIN_VELOCITY:
-            # Moving UP in image
             self._swipe_consecutive_up += 1
             self._swipe_consecutive_down = 0
         elif frame_velocity > config.SWIPE_MIN_VELOCITY:
-            # Moving DOWN in image
             self._swipe_consecutive_down += 1
             self._swipe_consecutive_up = 0
-        else:
-            # Not enough movement this frame — don't reset streaks,
-            # allow brief pauses in motion.
-            # But if both streaks are 0, this means no direction established yet.
-            pass
 
         total_disp = abs(self._swipe_cumulative)
-
-        # ─── Method 1: Consecutive frames + displacement ───
         has_enough_frames = (
             self._swipe_consecutive_up >= config.SWIPE_CONFIRM_FRAMES
             or self._swipe_consecutive_down >= config.SWIPE_CONFIRM_FRAMES
         )
-        has_enough_displacement = total_disp >= config.SWIPE_DISPLACEMENT_THRESHOLD
+        has_enough_displacement = (
+            total_disp >= config.SWIPE_DISPLACEMENT_THRESHOLD
+        )
 
         if has_enough_frames and has_enough_displacement:
             if self._swipe_cumulative < 0:
@@ -403,15 +570,14 @@ class GestureDetector:
             else:
                 return GestureEvent.SWIPE_DOWN
 
-        # ─── Method 2: Trend analysis over recent frames ───
-        min_trend_frames = config.SWIPE_CONFIRM_FRAMES + 3  # need a bit more for trend
+        # Trend analysis
+        min_trend_frames = config.SWIPE_CONFIRM_FRAMES + 3
         if len(self._swipe_y_history) >= min_trend_frames:
             recent = self._swipe_y_history[-min_trend_frames:]
             start_avg = sum(recent[:3]) / 3.0
             end_avg = sum(recent[-3:]) / 3.0
             trend = end_avg - start_avg
 
-            # Require larger displacement for trend method (less reliable)
             if abs(trend) >= config.SWIPE_DISPLACEMENT_THRESHOLD * 1.2:
                 if trend < 0:
                     return GestureEvent.SWIPE_UP
@@ -420,17 +586,20 @@ class GestureDetector:
 
         return None
 
-    # ─── EXIT WAKEUP ───
+    # ─────────────────────────────────────────────────────────────
+    # Exit wakeup
+    # ─────────────────────────────────────────────────────────────
 
     def _exit_wakeup(self):
         self._stage = Stage.IDLE
-        self._consecutive_target = 0
-        self._wakeup_frames = []
         self._wakeup_frame_count = 0
-        self._idle_window.clear()
+        self._idle_window_states.clear()
+        self._idle_window_hand.clear()
         self._idle_frame_count = 0
 
-        # Reset swipe state
+        # Legacy state
+        self._consecutive_target = 0
+        self._wakeup_frames = []
         self._swipe_start_y = -1.0
         self._swipe_previous_y = -1.0
         self._swipe_consecutive_up = 0
@@ -438,12 +607,18 @@ class GestureDetector:
         self._swipe_cumulative = 0.0
         self._swipe_y_history = []
 
+        # TCN state
+        if self._classifier:
+            self._classifier.reset()
+
         if self.on_stage_change:
             self.on_stage_change("IDLE", "")
 
-        logger.info("👁️ Back to IDLE — scanning at ~10fps")
+        logger.info("Back to IDLE")
 
-    # ─── FIRE GESTURE ───
+    # ─────────────────────────────────────────────────────────────
+    # Fire gesture
+    # ─────────────────────────────────────────────────────────────
 
     def _fire_gesture(self, event: GestureEvent):
         """Fire gesture event in a separate thread to not block camera."""
@@ -454,35 +629,33 @@ class GestureDetector:
                 daemon=True,
             ).start()
 
-    # ─── HELPERS ───
+    # ─────────────────────────────────────────────────────────────
+    # Helpers
+    # ─────────────────────────────────────────────────────────────
 
     @staticmethod
     def _state_emoji(state: HandState) -> str:
         return {
-            HandState.PALM: "🖐",
-            HandState.FIST: "✊",
-            HandState.UNKNOWN: "❓",
-            HandState.NONE: "·",
+            HandState.PALM: "P",
+            HandState.FIST: "F",
+            HandState.UNKNOWN: "?",
+            HandState.NONE: ".",
         }.get(state, "?")
 
     @staticmethod
     def _progress_bar(current: int, maximum: int) -> str:
         filled = min(current, maximum)
         empty = maximum - filled
-        return "[" + "█" * filled + "░" * empty + "]"
+        return "[" + "#" * filled + "-" * empty + "]"
 
     def _wakeup_summary(self) -> str:
         total = len(self._wakeup_frames)
         palm = sum(1 for s in self._wakeup_frames if s == HandState.PALM)
         fist = sum(1 for s in self._wakeup_frames if s == HandState.FIST)
-        none = sum(1 for s in self._wakeup_frames if s == HandState.NONE)
-        unk = sum(1 for s in self._wakeup_frames if s == HandState.UNKNOWN)
-
         timeline = "".join(
-            self._state_emoji(s)
-            for s in self._wakeup_frames[-30:]
+            self._state_emoji(s) for s in self._wakeup_frames[-30:]
         )
         return (
-            f"total={total} 🖐={palm} ✊={fist} ·={none} ❓={unk} "
-            f"swipe_dy={self._swipe_cumulative:.3f} | {timeline}"
+            f"total={total} P={palm} F={fist} "
+            f"dy={self._swipe_cumulative:.3f} | {timeline}"
         )

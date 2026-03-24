@@ -18,6 +18,19 @@ import os
 DEVICE_ID = uuid.uuid4().hex[:8]
 DEVICE_NAME = platform.node() or "Desktop"
 
+# ── Detection Method ──────────────────────────────────────────────
+# "neural_network" — use TCN model via ONNX Runtime (more accurate)
+# "legacy"         — use rule-based landmark ratio heuristics (no model needed)
+# If "neural_network" is selected but the model fails to load,
+# the detector automatically falls back to "legacy".
+DETECTION_METHOD = "neural_network"
+
+# ── Neural Network Model Paths ────────────────────────────────────
+_ASSETS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+TCN_MODEL_PATH = os.path.join(_ASSETS_DIR, "gesture_tcn_pruned_quantized.onnx")
+TCN_CONFIG_PATH = os.path.join(_ASSETS_DIR, "config.json")
+TCN_CONFIDENCE_THRESHOLD = 0.5
+
 # Network
 UDP_PORT = 9877
 MULTICAST_GROUP = "239.255.77.88"
