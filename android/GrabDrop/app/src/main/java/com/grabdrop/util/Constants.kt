@@ -12,6 +12,7 @@ import java.util.UUID
 object Constants {
     // ── Fixed (not configurable) ─────────────────────────────────
     const val NOTIFICATION_CHANNEL_ID = "grabdrop_service"
+    const val NOTIFICATION_CHANNEL_HIGH_ID = "grabdrop_high_priority"
     const val NOTIFICATION_ID = 1001
     const val SERVICE_ACTION_STOP = "com.grabdrop.STOP_SERVICE"
 
