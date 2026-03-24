@@ -374,7 +374,7 @@ class GrabDropService : Service() {
                     PendingIntent.FLAG_ONE_SHOT
         )
 
-        val notification = NotificationCompat.Builder(this, Constants.NOTIFICATION_CHANNEL_ID)
+        val notification = NotificationCompat.Builder(this, Constants.NOTIFICATION_CHANNEL_HIGH_ID)
             .setContentTitle("📥 Screenshot Received!")
             .setContentText("Tap to view the received screenshot")
             .setSmallIcon(R.drawable.ic_notification)

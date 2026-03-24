@@ -14,6 +14,7 @@ class GrabDropApp : Application() {
     }
 
     private fun createNotificationChannel() {
+        // Service channel (low importance)
         val channel = NotificationChannel(
             Constants.NOTIFICATION_CHANNEL_ID,
             getString(R.string.notification_channel_name),
@@ -22,7 +23,21 @@ class GrabDropApp : Application() {
             description = getString(R.string.notification_channel_description)
             setShowBadge(false)
         }
+
+        // High priority channel for screenshot received notifications
+        val highChannel = NotificationChannel(
+            Constants.NOTIFICATION_CHANNEL_HIGH_ID,
+            "Screenshot Received",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "Notifications for received screenshots"
+            setShowBadge(true)
+            enableLights(true)
+            enableVibration(true)
+        }
+
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)
+        manager.createNotificationChannel(highChannel)
     }
 }
