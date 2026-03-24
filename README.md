@@ -124,3 +124,6 @@ See [docs/network.md](docs/network.md) for the full protocol specification.
 - [Network Protocol](docs/network.md) -- UDP discovery, TCP transfer, wire format, implementation guide
 - [Android README](android/README.md) -- Build, permissions, settings, architecture
 - [Desktop README](desktop/README.md) -- Quick start, config reference, troubleshooting
+- [MODEL_GUIDE.md](MODEL_GUIDE.md) -- Complete model training, optimization, and deployment guide
+
+---
