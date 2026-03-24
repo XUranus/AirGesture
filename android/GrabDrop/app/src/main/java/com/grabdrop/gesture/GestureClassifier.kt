@@ -216,6 +216,7 @@ class GestureClassifier(private val context: Context) {
         // Count valid (real) frames in window
         val validFrames = isRealFrame.count { it }
         if (validFrames < MIN_VALID_FRAMES) {
+            Log.d(TAG, "Not enough real frames yet: $validFrames / $MIN_VALID_FRAMES")
             return null  // Not enough real frames yet
         }
 

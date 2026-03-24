@@ -8,6 +8,8 @@
 
 GrabDrop uses a simple, lightweight protocol for device discovery and screenshot transfer over a local area network. No central server, no internet connection, and no pairing is required.
 
+The network protocol is independent of the gesture detection method (Neural Network or Legacy). Both Android and Desktop clients use identical wire formats and are fully interoperable.
+
 ```
 ┌─────────────────────────────────────────────────────┐
 │                   PROTOCOL LAYERS                    │
