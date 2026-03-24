@@ -313,13 +313,14 @@ Cooldown: 0.8s
 
 | Property | Value |
 |----------|-------|
+| Dataset | Self-collected: 127 train / 33 test videos (PyQt5 tool) |
 | Model | Temporal Convolutional Network |
 | File | gesture_tcn_pruned_quantized.onnx |
 | Size | 0.17 MB (~170 KB) |
+| Classes | grab, release, swipe_up, swipe_down, noise |
 | Input | (1, 144, 30) — batch, features, time |
 | Output | (1, 5) — logits for 5 classes |
 | Runtime | ONNX Runtime |
-| Classes | grab, release, swipe_up, swipe_down, noise |
 
 ---
 
