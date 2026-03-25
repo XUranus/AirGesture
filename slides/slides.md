@@ -427,18 +427,17 @@ spectacle(KDE) → grim(Wayland) → gnome-screenshot → scrot(X11) → mss
 
 ```
 Original model (87K params):
-┌────────────────────────────────────────┐
-│ • Overfitting to training distribution │
-│ • Memorizing noise in training data    │
-│ • Redundant paths dilute features      │
-└────────────────────────────────────────┘
-              │
-              ▼ Pruning removes weak connections
-┌────────────────────────────────────────┐
-│ • Forced to learn robust features      │
+┌───────────────────────────────────────────┐
+│ • Overfitting to training distribution    │
+│ • Memorizing noise in training data       │
+│ • Redundant paths dilute features         │
+└───────────────────────────────────────────┘
+     ▼ Pruning removes weak connections
+┌───────────────────────────────────────────┐
+│ • Forced to learn robust features         │
 │ • Smaller capacity = better generalization│
-│ • Focus on most discriminative patterns │
-└────────────────────────────────────────┘
+│ • Focus on most discriminative patterns   │
+└───────────────────────────────────────────┘
 ```
 
 **Similar findings:** Lottery Ticket Hypothesis (Frankle & Carbin, 2019); Pruned ResNets often generalize better
