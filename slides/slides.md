@@ -135,69 +135,45 @@ Here is how GrabDrop works at a high level. On Device A, the sender performs a G
 
 ---
 
+# Hand Landmark Detection (MediaPipe)
 
-<!-- _class: section-title -->
+**MediaPipe Hand Landmarker** — 21 3D landmarks per frame
 
-# Part 2: AI Algorithm Design
-## *Speaker_B*
+| Property | Value |
+|----------|-------|
+| Model | MediaPipe Hand Landmarker (FP16) |
+| Size | ~12 MB |
+| Output | 21 × (x, y, z) = 63 dims/frame |
+
+<div class="bottom-right"><img src="./assets/hand.png" ></div>
+
+<!--Speaker Notes:
+For hand detection, we use Google MediaPipe Hand Landmarker, a pre-trained model that outputs 21 three-dimensional landmarks on the hand. It has a excellent performance on edge device and takes only about 12 megabytes in size. We run it in VIDEO mode, which enables stateful temporal tracking for more stable detections.
+-->
 
 ---
 
 # Two-Stage Detection Pipeline
 
-<div class="columns">
-<div>
 
-**IDLE Stage (10 FPS)**
-- Low-power scanning
-- Detect hand presence
-- 8/10 frames with hand → WAKEUP
+<div><img src="./assets/two-stage-pipeline.png" ></div>
 
-</div>
-<div>
 
-**WAKEUP Stage (30 FPS)**
-- High-precision classification
-- TCN runs on 30-frame window
-- Timeout: **2s** → return to IDLE
+<!--Speaker Notes:
+To balances power efficiency with detection accuracy, we designed a two-stage detection pipeline. 
 
-</div>
-</div>
+The first stage is the IDLE stage, which runs at a low frame rate of about 10 frames per second. Its job is to detect the presence of a hand. When a hand is detected(e.g, 8 frames out of continuous 10 frames), the system transitions to the WAKEUP stage, which runs at 30 frames per second for high-precision motion tracking.
 
-```
-┌───────────────────┐  hand   ┌────────────────────┐
-│   IDLE            │ detected│   WAKEUP           │
-│   ~10 fps         ├────────►│   ~30 fps          │
-│   Scan for hand   │         │   Classify gesture │
-│                   │◄────────┤   Emit event       │
-└───────────────────┘ timeout └────────────────────┘
-```
-
-| Stage | FPS | CPU (est.) | Duration |
-|-------|-----|------------|----------|
-| IDLE | 10 | 5-8% | Continuous |
-| WAKEUP | 30 | 15-25% | ≤2 sec |
+After it enter WAKEUP state, the following frames captured will be handled to TCNN to do the classification. Let me handle this part -- the core algorithm to Speaker_B.
+-->
 
 ---
 
-# Hand Landmark Detection (MediaPipe)
 
-**MediaPipe Hand Landmarker** — 21 3D landmarks per frame
+<!-- _class: section-title -->
 
-```
-        WRIST (0)
-          │
-    ┌─────┼─────┬──────┬──────┬──────┐
-  THUMB  INDEX  MIDDLE  RING  PINKY
-   (1)   (5)    (9)   (13)  (17)
-```
-
-| Property | Value |
-|----------|-------|
-| Model | MediaPipe Hand Landmarker (float16) |
-| Size | ~12 MB |
-| Confidence | 0.3 (lowered for robustness) |
-| Output | 21 × (x, y, z) = 63 dims/frame |
+# Part 2: AI Algorithm Design
+## *Speaker_B*
 
 ---
 

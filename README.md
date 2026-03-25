@@ -6,6 +6,8 @@
 
 GrabDrop lets you **grab** a screenshot by closing your hand (palm -> fist) and **release** it onto another device by opening your hand (fist -> palm). Screenshots transfer instantly over your local WiFi network. Swipe gestures (up/down) simulate page scrolling.
 
+![](slides/assets/grab-release.png)
+
 ```
 Device A (Sender)                    Device B (Receiver)
 -----------------                    ------------------
