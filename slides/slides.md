@@ -32,6 +32,10 @@ style: |
 
 <div class="bottom-right"><img src="./assets/cover.png" ></div>
 
+<!-- Speaker Notes:
+Hello everyone, today we are going to present GrabDrop, a cross-device screenshot transfer system powered by air gesture recognition. I will present the motivation and overview. After me, Speaker_B will cover the AI algorithm design, Speaker_C will talk about system architecture and implementation, and Speaker_D will present our results and future work. 
+-->
+
 ---
 
 <!-- _class: section-title -->
@@ -52,6 +56,12 @@ style: |
 
 <div class="bottom-right"><img src="./assets/wechat-transfer.png" ></div>
 
+<!-- Speaker Notes: 
+So let us start with the problem. How do you currently share a screenshot between your devices, like phone, tablet and laptop? You could use a chat app like WeChat/Telegram — but that requires five or more steps: take the screenshot, open the app, select a contact, send, and then open it on the other device. You could use email or cloud storage, but those are even more cumbersome and require internet access. Even a USB cable requires physically connecting the devices. 
+
+The key insight here is that all these methods require too many manual steps and interrupt your workflow.
+-->
+
 ---
 
 # Inspiration: Huawei Air Gesture
@@ -67,11 +77,24 @@ Introduced on select **Harmony OS** devices — grab content from screen and "dr
 
 <div class="bottom-right"><img src="./assets/huawei-gesture.png" ></div>
 
+
+<!-- Speaker Notes:
+Our project is inspired by Huawei's Air Gesture feature of Harmony OS, which lets you grab content from the screen using hand gestures and transfer it to another device. 
+
+However, Huawei's implementation has major limitations — it only works between Huawei devices and requires specific hardware.
+
+Our goal is to remove these restrictions. We want to make this work on any Android device via local network — we tested on Xiaomi — and bridge the gap between phones and laptops, only require a front camera.
+-->
+
 ---
 
 # Demo
 
 > TODO:: video insert here
+
+<!--Speaker Notes:
+Here is a demo video, we test the screenshot transfer between xiaomi phone and laptop
+-->
 
 ---
 # Workflow
@@ -90,6 +113,11 @@ Introduced on select **Harmony OS** devices — grab content from screen and "dr
 
 
 <div class="bottom-right"><img src="./assets/grab-release.png" ></div>
+
+
+<!--Speaker Notes:
+Here is how GrabDrop works at a high level. On Device A, the sender performs a GRAB gesture — that is, transitioning from an open palm to a closed fist in front of the camera. This triggers a screenshot capture and broadcasts the availability to all nearby devices on the same Wi-Fi network. Then, on Device B, the receiver performs a RELEASE gesture — transitioning from a fist to an open palm. This triggers a download of the screenshot from Device A.
+-->
 
 ---
 
@@ -401,7 +429,7 @@ spectacle(KDE) → grim(Wayland) → gnome-screenshot → scrot(X11) → mss
 <!-- _class: section-title -->
 
 # Part 4: Results & Future Work
-## Speaker_D
+## *Speaker_D*
 
 ---
 
@@ -473,11 +501,11 @@ This grpha shows our performance in each class. Each class has nice performance.
 
 # Strengths
 
-1. **Cross-platform** — Android 10+ + Linux/macOS/Windows
-2. **Zero-config** — No pairing, no cloud, no internet
-3. **Power-efficient** — Two-stage: 10fps idle, 30fps wakeup (≤2s)
-4. **Optimized model** — Pruned + quantized TCN: 2× smaller, +3.7% accuracy
-5. **Robust detection** — TCN handles varied hand shapes and lighting
+ - **Cross-platform** — Android 10+ + Linux/macOS/Windows
+ - **Zero-config** — No pairing, no cloud, no internet
+ - **Power-efficient** — Two-stage: 10fps idle, 30fps wakeup (≤2s)
+ - **Optimized model** — Pruned + quantized TCN: 2× smaller, +3.7% accuracy
+ - **Robust detection** — TCN handles varied hand shapes and lighting
 
 <!-- Speaker Notes：
 For our strengths, the grabdorp can be used in many systems eccept IOS. It doesn't have many step to initilize it; you can connect to another device without configuration. And it is Power-efficient, the model is more optimized. It can also adapt to different enviroment for different hands and lighting.
@@ -524,7 +552,7 @@ In the future, we are going to use a larger vision model like YOLOv8, use advanc
 | **Platforms** | Android + Linux/macOS/Windows |
 | **Result** | ~3s transfer, <2ms inference, 0.17MB model |
 
-**All code is open source.**
+**GitHub Repo : https://github.com/XUranus/AirGesture**
 
 <!-- Speaker Notes：
 After all these steps, we have successfully achieved our goal, which has only 3s to transfer, <2ms inference, 0.17MB model. Our code is open source and welcome by everyone.
@@ -536,7 +564,3 @@ After all these steps, we have successfully achieved our goal, which has only 3s
 
 # Thank You
 ## Questions?
-
-GrabDrop — Cross-Device Screenshot Transfer via Air Gesture
-
-Speaker_A · Speaker_B · Speaker_C · Speaker_D
