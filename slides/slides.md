@@ -419,6 +419,9 @@ spectacle(KDE) → grim(Wayland) → gnome-screenshot → scrot(X11) → mss
 
 > **Surprising result:** Pruning improved accuracy by +3.7%!
 
+<!-- Speaker Notes：
+These are our optimization results, it is obvious that the model after pruning and quantization is almost half of the original model. An amazing fact is that accuracy improves 3.7%!
+ -->
 ---
 
 # Why Did Pruning Improve Accuracy?
@@ -442,6 +445,11 @@ Original model (87K params):
 
 **Similar findings:** Lottery Ticket Hypothesis (Frankle & Carbin, 2019); Pruned ResNets often generalize better
 
+<!-- Speaker Notes：
+And why？
+For the oringinal model, it has more params, which will cause some bad effects: overfitting,Memorizing noise in training data. and it has Redundant paths dilute features. After removing weak connections, it can learn robust features. And smaller capacity makes it better generalization, it can focus on most discriminative patterns.
+ -->
+
 ---
 
 # Per-Class Performance
@@ -458,6 +466,9 @@ Original model (87K params):
 - grab/release: Similar motion, reversed in time (~3-4% confusion)
 - swipe_up/down: Motion direction confusion (5-6%)
 
+<!-- Speaker Notes：
+This grpha shows our performance in each class. Each class has nice performance. Grab and release have 4% confusion, and swipe up and swipe down have 5-6% confusion, caused by the motion direction confusion.
+ -->
 ---
 
 # Strengths
@@ -468,6 +479,9 @@ Original model (87K params):
 4. **Optimized model** — Pruned + quantized TCN: 2× smaller, +3.7% accuracy
 5. **Robust detection** — TCN handles varied hand shapes and lighting
 
+<!-- Speaker Notes：
+For our strengths, the grabdorp can be used in many systems eccept IOS. It doesn't have many step to initilize it; you can connect to another device without configuration. And it is Power-efficient, the model is more optimized. It can also adapt to different enviroment for different hands and lighting.
+ -->
 ---
 
 # Limitations
@@ -479,6 +493,10 @@ Original model (87K params):
 | Single hand only | Sufficient for use case |
 | Camera angle | Front camera recommended |
 
+<!-- Speaker Notes：
+But it also has limitations like Lighting sensitivity,No encryption. It only support single hand, but it is enough.
+ -->
+
 ---
 
 # Future Work
@@ -489,6 +507,10 @@ Original model (87K params):
 4. **Extended gestures** — Pinch, rotation, multi-hand
 5. **iOS client** — Full ecosystem coverage
 
+
+<!-- Speaker Notes：
+In the future, we are going to use a larger vision model like YOLOv8, use advanced quantization technique. For the security part, we plan to add TLS encryption or QR pairing. And we will support more gestures and IOS client.
+ -->
 ---
 
 # Summary
@@ -503,6 +525,10 @@ Original model (87K params):
 | **Result** | ~3s transfer, <2ms inference, 0.17MB model |
 
 **All code is open source.**
+
+<!-- Speaker Notes：
+After all these steps, we have successfully achieved our goal, which has only 3s to transfer, <2ms inference, 0.17MB model. Our code is open source and welcome by everyone.
+ -->
 
 ---
 
