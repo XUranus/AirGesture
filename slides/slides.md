@@ -169,151 +169,186 @@ After it enter WAKEUP state, the following frames captured will be handled to TC
 
 ---
 
-
 <!-- _class: section-title -->
 
-# Part 2: AI Algorithm Design
+# Part 2: From Hand Landmarks to Gesture Classification
 ## *Speaker_B*
 
----
+<div class="bottom"><img src="./assets/train-pipeline.png"></div>
 
-# TCN Gesture Classifier
-
-**Why GestureTCN?**
-- Lightweight: 87K params vs YOLOv8's 3M-68M
-- Real-time: <2ms inference on edge devices
-- Demonstrates optimization principles applicable to larger models
-
-**Key Properties:**
-
-| Property | Value |
-|----------|-------|
-| Dataset | Self-collected: 127 train / 33 test videos (PyQt5 tool) |
-| Model | Temporal Convolutional Network |
-| File | gesture_tcn_pruned_quantized.onnx |
-| Size | 0.17 MB (~170 KB) |
-| Classes | grab, release, swipe_up, swipe_down, noise |
-| Input | (1, 144, 30) — batch, features, time |
-| Output | (1, 5) — logits for 5 classes |
-| Runtime | ONNX Runtime |
+<!--
+Speaker Notes:
+Here is our full pipeline in Part 2. Part 1 covered the two-stage wake-up and MediaPipe landmark extraction. Part 2 focuses on the downstream steps: transforming landmarks into gesture predictions through feature engineering, model training, and deployment optimization.
+-->
 
 ---
 
-# TCN Architecture
+# Feature Engineering (144-dim)
 
-**Causal dilated convolutions** for real-time streaming:
+| Feature Group | Dims | Description |
+|:--|:--:|:--|
+| Normalized Landmarks | 63 | Relative to wrist, scaled by palm size |
+| Velocity | 63 | Frame-to-frame landmark difference |
+| Wrist Velocity | 3 | Wrist position change |
+| Fingertip Distances | 10 | Pairwise distances between 5 fingertips |
+| Finger Angles | 5 | Bending angle per finger chain |
 
-```
-Input (144 features × 30 frames)
-        │
-        ▼
-┌───────────────┐    ┌───────────────┐    ┌─────────┐
-│ Stem Conv1D   │───►│ TCN Blocks    │───►│ Head    │
-│ 144 → 32 ch   │    │ Dilation 1,2,4│    │ 48 → 5  │
-└───────────────┘    │ RF = 19 frames│    └─────────┘
-                     └───────────────┘
-```
+> *Wrist-relative + palm-size normalization* → hand-size & position **invariant**
 
-**Key Design Choices:**
-- **Causal convolutions:** No future information (real-time streaming)
-- **Dilated convolutions:** Large receptive field with few parameters
-- **Residual connections:** Stable training, gradient flow
-
-**Receptive Field Analysis:**
-- Block 1 (d=1): 3 frames
-- Block 2 (d=2): 7 frames
-- Block 3 (d=4): 15 frames
-- Block 4 (d=1): **19 frames** (~0.6s at 30 FPS)
+<!--
+Speaker Notes:
+From MediaPipe's 21 landmarks, we compute a 144-dimensional feature vector per frame. We normalize all landmarks relative to the wrist and divide by palm size, making features invariant to hand position and size. We also compute velocity for motion capture, pairwise fingertip distances for grab/release detection, and finger bending angles for pose discrimination.
+-->
 
 ---
 
-# Feature Engineering (144 dims)
+# Data Augmentation Strategy
 
 <div class="columns">
-<div>
+<div class="col">
 
-| Feature Group | Dims | Purpose |
-|---------------|------|---------|
-| Normalized landmarks | 63 | Position invariant |
-| Velocity | 63 | Motion direction |
-| Wrist velocity | 3 | Global movement |
-| Finger distances | 10 | Open vs closed |
-| Finger angles | 5 | Curl state |
+### Spatial
+- **Rotation** ±5°~15°
+- **Scale** 0.85×~1.15×
+- **Mirror-X** (non-swipe only)
+- **Jitter** σ = 0.003
 
 </div>
-<div>
+<div class="col">
 
-**Normalization Pipeline:**
-```
-Raw (63) → Wrist-relative
-        → Palm-size normalized
-        → Z-score
-```
-
-**Velocity:**
-```
-velocity[t] = landmarks[t] - landmarks[t-1]
-```
+### Temporal
+- **Time Warp** (anchor-based)
+- **Speed Change** 0.8×~1.2×
+- **Temporal Crop** (multi-window)
+- **Reverse** (with label swap)
 
 </div>
 </div>
+
+> *grab* ↔ *release*, *swipe_up* ↔ *swipe_down* via time reversal
+> **~100 videos → 3,000+ training samples**
+
+<!--
+Speaker Notes:
+Our dataset has only about 100 original videos, so augmentation is critical. We apply spatial transforms like rotation and scaling, and temporal ones like time warping and speed changes. A key insight: reversing a grab video gives a valid release sample, and reversing swipe_up gives swipe_down. This expanded our training set from about 100 videos to over 3000 samples.
+-->
 
 ---
 
-# Model Optimization Pipeline
+# GestureTCN Architecture
 
-```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│  Original   │    │   Pruned    │    │  Quantized  │
-│   FP32      │───►│    FP32     │───►│    INT8     │
-│  87K params │    │  46K params │    │  46K params │
-│  0.34 MB    │    │  0.18 MB    │    │  0.17 MB    │
-└─────────────┘    └─────────────┘    └─────────────┘
-                        │
-                        ▼
-              Fine-tune 100 epochs
-```
+<div class="bottom-right"><img src="./assets/TCN-Architecture.png" width="100%"></div>
+
+<div class="right">
+
+**Key Design Choices:**
+- **Causal convolutions:** No future info (real-time safe)
+- **Dilated convolutions:** Large receptive field (covers 30 frames)
+- **Residual connections:** Stable gradient flow
+- **Only 87K params:** Lightweight for mobile
+
+</div>
+
+<!--
+Speaker Notes:
+Our model is a lightweight Temporal Convolutional Network with only 87 thousand parameters. The stem projects 144 features to 48 channels. Then residual blocks with increasing dilation — 1, 2, 4 — capture both short-term finger movements and longer-term gesture patterns. All convolutions are causal, meaning each frame only sees past context, essential for real-time streaming. After global pooling, a small head outputs 5-class logits.
+-->
 
 ---
 
-# Structured Pruning
+# Training Strategy
 
-**Channel pruning with fine-tuning:**
+| | |
+|:--|:--|
+| Optimizer | AdamW (weight decay 1e-3) |
+| Learning Rate | 2e-3 → 1e-5 (Cosine Annealing) |
+| Label Smoothing | 0.1 (prevent overconfidence) |
+| Class Balancing | WeightedRandomSampler |
+| Gradient Clipping | max_norm = 2.0 |
+| Early Stopping | Patience = 40 epochs |
+| Online Augmentation | Jitter + Time Warp at train time |
 
-| Config | Original | Pruned |
-|--------|----------|--------|
+> Designed for **small dataset** + **class imbalance**
+
+<!--
+Speaker Notes:
+Our training strategy is tailored for a small, imbalanced dataset. AdamW with cosine annealing decays learning rate smoothly. Label smoothing at 0.1 prevents overconfident predictions — important because we rely on confidence thresholds at inference. WeightedRandomSampler ensures underrepresented classes get sampled fairly. We also apply jitter and time warp as online augmentation for extra regularization.
+-->
+
+---
+
+# Deployment Optimization
+
+```
+
+┌──────────────┐      ┌──────────────┐      ┌──────────────┐
+│   Original   │      │   Pruned     │      │  Quantized   │
+│     FP32     │─────►│    FP32      │─────►│    INT8      │
+│  87K params  │      │  46K params  │      │  46K params  │
+│   0.34 MB    │      │   0.18 MB    │      │   0.17 MB    │
+└──────────────┘      └──────────────┘      └──────────────┘
+Structured            Fine-tune            ONNX RT
+Pruning 30%          100 epochs         Static PTQ
+
+```
+
+> **1.9× fewer params** | **2× smaller** | Deployed via **ONNX Runtime** on Android
+
+<!--
+Speaker Notes:
+For mobile deployment, three optimization steps. First, structured pruning removes 30% of channels — entire filters, not individual weights — cutting parameters nearly in half. The pruned model is fine-tuned for 100 epochs to recover accuracy. Finally, ONNX export with INT8 static quantization further reduces size. The result is a 0.17 MB model running on Android.
+-->
+
+---
+
+# Pruning & Quantization Details
+
+<div class="columns">
+<div class="col">
+
+### Structured Pruning
+
+| Layer | Original | Pruned |
+|:--|:--:|:--:|
 | stem | 48 | 32 |
 | mid | 48 | 32 |
 | out | 64 | 48 |
 | head | 32 | 24 |
-| **Total params** | 87,077 | 45,877 |
 
-**Design choices:**
-- Round channels to multiple of 8 for SIMD efficiency
-- Remove entire channels (structured), not individual weights
-- Fine-tune 100 epochs with lower LR (1e-3)
+- Channels → **multiple of 8** (SIMD)
+- Remove **entire channels** (not weights)
+- Fine-tune: 100 epochs, LR = 1e-3
 
----
+</div>
+<div class="col">
 
-# INT8 Quantization
+### INT8 Quantization
 
-**Post-training static quantization (PTQ) with calibration:**
-
-**Affine quantization:** $q = \text{round}(r/s + z)$
+$q = \text{round}(r / s + z)$
 
 ```python
-from onnxruntime.quantization import quantize_static, QuantType, QuantFormat
-
 quantize_static(
-    model_input="gesture_tcn_pruned.onnx",
-    model_output="gesture_tcn_pruned_quantized.onnx",
-    calibration_data_reader=calib_reader,
-    quant_format=QuantFormat.QDQ,
-    weight_type=QuantType.QInt8,
+  model_input  = "pruned.onnx",
+  model_output = "quantized.onnx",
+  calibration_data_reader = calib,
+  quant_format = QuantFormat.QDQ,
+  weight_type  = QuantType.QInt8,
 )
-```
+````
 
-**Calibration:** Use representative data to determine scale $s$ and zero point $z$ for optimal quantization range.
+* **Calibration** → optimal *s*, *z*
+* FP32 → INT8: **4× smaller** per weight
+* Runs on **ONNX Runtime** (Android)
+
+</div>
+</div>
+
+> Evaluation results will be presented in **Part 4**.
+
+<!--
+Speaker Notes:
+On the left — structured pruning removes entire channels, not individual weights, so we get real speedup on standard hardware. Channels are rounded to multiples of 8 for SIMD efficiency. On the right — after ONNX export, INT8 static quantization uses calibration data to find optimal scale and zero-point. INT8 is 4 times smaller per element than FP32. The final model runs on Android via ONNX Runtime. That covers our model training and deployment — evaluation results will be in Part 4. Thank you.
+-->
 
 ---
 
