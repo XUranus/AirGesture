@@ -4,82 +4,40 @@ theme: default
 paginate: true
 size: 16:9
 style: |
-  section {
-    font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
-    background: #ffffff;
-  }
-  section.title-slide {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-    color: white;
-    text-align: center;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-  }
-  section.title-slide h1 {
-    color: #e94560;
-    font-size: 2em;
-    margin-bottom: 0.1em;
-  }
-  section.title-slide h2 {
-    color: #e8e8e8;
-    font-size: 1em;
-    font-weight: 400;
-  }
-  section.title-slide p {
-    color: #b0b0b0;
-    font-size: 0.9em;
-  }
-  section.section-title {
-    background: linear-gradient(135deg, #0f3460 0%, #1a1a2e 100%);
-    color: white;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    text-align: center;
-  }
-  section.section-title h1 {
-    color: #e94560;
-    font-size: 2em;
-  }
-  section.section-title h2 {
-    color: #cccccc;
-    font-weight: 400;
-    font-size: 1em;
-  }
-  h1 { color: #0f3460; font-size: 1.5em; }
-  h2 { color: #e94560; font-size: 1.2em; }
-  h3 { color: #16213e; font-size: 1.0em; }
-  table { font-size: 0.7em; }
-  th { background: #0f3460; color: white; }
-  code { font-size: 0.5em; }
-  pre { font-size: 0.6em; }
-  img { max-height: 60%; }
-  footer { font-size: 0.6em; color: #888; }
-  blockquote {
-    border-left: 4px solid #e94560;
-    background: #f8f8f8;
-    padding: 0.5em 1em;
-    font-size: 0.85em;
+  table {
+    transform: scale(0.8); /* Shrinks to 80% size */
+    transform-origin: top left;
   }
 ---
 
-<!-- _class: title-slide -->
+<style>
+    .bottom-right {
+    position: absolute;
+    right: 20px;
+    bottom: 20px;
+    width: 50%;
+  }
+</style>
+
 
 # GrabDrop
-## Cross-Device Screenshot Transfer via Air Gesture Recognition
+## Cross-Device Screenshot Transfer via 
+## Air Gesture Recognition
 
-DSAI5201 — AI and Big Data Computing in Practice
-Spring 2026
+ - *Speaker_A* 
+ - *Speaker_B*
+ - *Speaker_C*
+ - *Speaker_D*
 
-Speaker_A · Speaker_B · Speaker_C · Speaker_D
+
+<div class="bottom-right"><img src="./assets/cover.png" ></div>
 
 ---
 
 <!-- _class: section-title -->
 
 # Part 1: Motivation & Overview
-## Speaker_A
+## *Speaker_A*
 
 ---
 
@@ -87,111 +45,116 @@ Speaker_A · Speaker_B · Speaker_C · Speaker_D
 
 **Current pain points** when sharing screenshots between phone and laptop:
 
-| Method | Steps | Issues |
-|--------|-------|--------|
-| Chat apps (WeChat, Telegram) | Screenshot → Open app → Select contact → Send → Open on other device | 5+ steps, needs internet |
-| Email | Screenshot → Compose → Attach → Send → Download | Slow, cumbersome |
-| Cloud storage | Screenshot → Upload → Switch device → Download | Requires account setup |
-| USB cable | Plug in → Find file → Copy | Physical tether |
+ - Chat apps (WeChat, Telegram)
+ - Email
+ - Cloud storage
+ - USB cable
 
-> **Key insight:** All existing methods require multiple manual steps and break the user's workflow.
+<div class="bottom-right"><img src="./assets/wechat-transfer.png" ></div>
 
 ---
 
 # Inspiration: Huawei Air Gesture
 
-Huawei introduced **Air Gesture** on select devices — grab content from screen and "drop" it to another device using hand gestures.
+Introduced on select **Harmony OS** devices — grab content from screen and "drop" it to another device using hand gestures.
 
-**Limitations of Huawei's approach:**
-- Only works between Huawei devices (proprietary ecosystem)
-- Requires specific Huawei hardware
-- Not available on other Android OEMs or desktops
 
-**Our goal — GrabDrop:**
-- Make it work on **any Android device** (tested on Xiaomi)
-- Bridge the gap between **Android phones and Linux/Mac/Windows laptops**
+**Our Goal:**
+- Any Android/desktop device
+- CV solution only
 - Fully **open-source** implementation
-- No Internet required — works over **local network (LAN) only**
+- LAN only
+
+<div class="bottom-right"><img src="./assets/huawei-gesture.png" ></div>
 
 ---
 
-# GrabDrop: System Overview
+# Demo
 
-**Core idea:** Use hand gestures captured by front camera to grab and drop screenshots across devices.
+> TODO:: video insert here
 
-```
-  Device A (Sender)                              Device B (Receiver)
-  ┌──────────────┐                               ┌──────────────┐
-  │  Open Palm    │   GRAB = take screenshot      │              │
-  │   → Fist      │                               │              │
-  │               │ ── UDP broadcast offer ──►    │              │
-  │               │                               │  Fist        │
-  │               │                               │   → Open Palm│
-  │               │   ◄── TCP download ────       │  RELEASE =   │
-  │               │                               │  receive it  │
-  └──────────────┘                               └──────────────┘
-```
+---
+# Workflow
 
-**No pairing. No cloud. No wires. Just gesture.**
+1. Both devices on **same Wi-Fi**
+
+2. **Device A**: Show hand ~1s
+   - Close fist (GRAB)
+   - Screenshot captured
+   - UDP broadcast sent
+
+3. **Device B**: Show hand ~1s
+   - Open hand (RELEASE)
+   - TCP download
+   - Image saved & opened
+
+
+<div class="bottom-right"><img src="./assets/grab-release.png" ></div>
 
 ---
 
-# Demo Flow
+# Project Foundation
 
-```
-Step 1: Both devices running GrabDrop on the same Wi-Fi network
+**Topic:** Quantization and Pruning of Lightweight Gesture Classfier
 
-Step 2: GRAB gesture on Device A (palm → fist)
-        → Screenshot captured instantly
-        → Broadcast availability to all nearby devices
+**Task:** 
+ - Develop an android and desktop app
+ - Train a model for gesture classification
 
-Step 3: RELEASE gesture on Device B (fist → palm)
-        → Download screenshot from Device A
-        → Save to gallery / open in viewer
-
-Total time: ~3 seconds
-```
-
-**Supported platforms:**
-- Android (any device with Android 10+, tested on Xiaomi)
-- Linux desktop (primary), macOS, Windows
+**Our approach:** 
+ - Train a lightweight TCN gesture classifier
+ - Apply pruning and quantization techniques 
 
 ---
+
 
 <!-- _class: section-title -->
 
 # Part 2: AI Algorithm Design
-## Speaker_B
+## *Speaker_B*
 
 ---
 
-# Two-Stage Gesture Detection Pipeline
+# Two-Stage Detection Pipeline
 
-We designed a **two-stage pipeline** balancing power efficiency and detection accuracy:
+<div class="columns">
+<div>
+
+**IDLE Stage (10 FPS)**
+- Low-power scanning
+- Detect hand presence
+- 8/10 frames with hand → WAKEUP
+
+</div>
+<div>
+
+**WAKEUP Stage (30 FPS)**
+- High-precision classification
+- TCN runs on 30-frame window
+- Timeout: **2s** → return to IDLE
+
+</div>
+</div>
 
 ```
-┌───────────────────┐         ┌────────────────────┐
-│   IDLE STAGE      │         │   WAKEUP STAGE     │
-│                   │ trigger │                    │
-│  Low power        ├────────►│  High precision    │
-│  ~10 fps          │         │  ~30 fps           │
-│  Detect presence  │         │  Track motion      │
-│  of hand          │◄────────┤  Confirm gesture   │
-│                   │ timeout │                    │
-│                   │ or done │                    │
-└───────────────────┘         └────────────────────┘
+┌───────────────────┐  hand   ┌────────────────────┐
+│   IDLE            │ detected│   WAKEUP           │
+│   ~10 fps         ├────────►│   ~30 fps          │
+│   Scan for hand   │         │   Classify gesture │
+│                   │◄────────┤   Emit event       │
+└───────────────────┘ timeout └────────────────────┘
 ```
 
-| Stage | FPS | Purpose | Duration |
-|-------|-----|---------|----------|
-| IDLE | 10 | Hand presence detection | Continuous |
-| WAKEUP | 30 | Motion tracking & confirmation | ≤ 2 sec |
+| Stage | FPS | CPU (est.) | Duration |
+|-------|-----|------------|----------|
+| IDLE | 10 | 5-8% | Continuous |
+| WAKEUP | 30 | 15-25% | ≤2 sec |
 
 ---
 
-# Step 1: Hand Landmark Detection (MediaPipe)
+# Hand Landmark Detection (MediaPipe)
 
-We use **Google MediaPipe Hand Landmarker** (float16) to detect 21 hand landmarks:
+**MediaPipe Hand Landmarker** — 21 3D landmarks per frame
 
 ```
         WRIST (0)
@@ -199,119 +162,161 @@ We use **Google MediaPipe Hand Landmarker** (float16) to detect 21 hand landmark
     ┌─────┼─────┬──────┬──────┬──────┐
   THUMB  INDEX  MIDDLE  RING  PINKY
    (1)   (5)    (9)   (13)  (17)
-    │     │      │      │      │
-   (2)   (6)   (10)   (14)   (18)  ← PIP
-    │     │      │      │      │
-   (3)   (7)   (11)   (15)   (19)
-    │     │      │      │      │
-   (4)   (8)   (12)   (16)   (20)  ← TIP
 ```
 
 | Property | Value |
 |----------|-------|
-| Model | MediaPipe Hand Landmarker (float16, ~12 MB) |
-| Running mode | VIDEO (stateful temporal tracking) |
-| Detection confidence | 0.3 (lowered for robustness) |
-| Output | 21 normalized (x, y, z) landmarks per frame |
+| Model | MediaPipe Hand Landmarker (float16) |
+| Size | ~12 MB |
+| Confidence | 0.3 (lowered for robustness) |
+| Output | 21 × (x, y, z) = 63 dims/frame |
 
 ---
 
-# Step 2: Hand State Classification
+# TCN Gesture Classifier
 
-**Finger Curl Ratio** — a geometric metric to classify finger state:
+**Why GestureTCN?**
+- Lightweight: 87K params vs YOLOv8's 3M-68M
+- Real-time: <2ms inference on edge devices
+- Demonstrates optimization principles applicable to larger models
 
-$$\text{ratio} = \frac{d(\text{fingertip},\ \text{wrist})}{d(\text{finger\_mcp},\ \text{wrist})}$$
+**Key Properties:**
 
-where $d$ is 2D Euclidean distance on normalized (x, y) coordinates.
-
-| Condition | Interpretation |
-|-----------|---------------|
-| ratio > 1.3 | Finger **EXTENDED** (open) |
-| ratio < 0.9 | Finger **CURLED** (closed) |
-| otherwise | **AMBIGUOUS** (ignored) |
-
-**Hand state rules** (4 fingers: index, middle, ring, pinky; thumb excluded):
-
-| Condition | State |
-|-----------|-------|
-| >= 3 fingers extended | **PALM** (open hand) |
-| >= 3 fingers curled | **FIST** (closed hand) |
-| Otherwise | **UNKNOWN** |
+| Property | Value |
+|----------|-------|
+| Dataset | Self-collected: 127 train / 33 test videos (PyQt5 tool) |
+| Model | Temporal Convolutional Network |
+| File | gesture_tcn_pruned_quantized.onnx |
+| Size | 0.17 MB (~170 KB) |
+| Classes | grab, release, swipe_up, swipe_down, noise |
+| Input | (1, 144, 30) — batch, features, time |
+| Output | (1, 5) — logits for 5 classes |
+| Runtime | ONNX Runtime |
 
 ---
 
-# Step 3: Idle Stage — Low-Power Hand Detection
+# TCN Architecture
 
-**Goal:** Detect when a hand is steadily present before entering high-FPS tracking.
-
-- Maintains a **sliding window** of last 10 frames (~1 second at 10 fps)
-- Counts occurrences of each hand state in the window
+**Causal dilated convolutions** for real-time streaming:
 
 ```
-Window: [PALM, PALM, ?, PALM, PALM, PALM, PALM, PALM, ?, PALM]
-         PALM count = 8 / 10  >=  threshold (8)
-         → Enter WAKEUP stage, looking for FIST (GRAB gesture)
+Input (144 features × 30 frames)
+        │
+        ▼
+┌───────────────┐    ┌───────────────┐    ┌─────────┐
+│ Stem Conv1D   │───►│ TCN Blocks    │───►│ Head    │
+│ 144 → 32 ch   │    │ Dilation 1,2,4│    │ 48 → 5  │
+└───────────────┘    │ RF = 19 frames│    └─────────┘
+                     └───────────────┘
 ```
 
-| Trigger | Wakeup Looks For | Gesture |
-|---------|-----------------|---------|
-| 8/10 frames = PALM | PALM → FIST transition | **GRAB** |
-| 8/10 frames = FIST | FIST → PALM transition | **RELEASE** |
+**Key Design Choices:**
+- **Causal convolutions:** No future information (real-time streaming)
+- **Dilated convolutions:** Large receptive field with few parameters
+- **Residual connections:** Stable training, gradient flow
 
-> Only ~5-8% CPU usage during IDLE — suitable for always-on background service.
+**Receptive Field Analysis:**
+- Block 1 (d=1): 3 frames
+- Block 2 (d=2): 7 frames
+- Block 3 (d=4): 15 frames
+- Block 4 (d=1): **19 frames** (~0.6s at 30 FPS)
 
 ---
 
-# Step 4: Wakeup Stage — Gesture Confirmation
+# Feature Engineering (144 dims)
 
-**Goal:** Confirm gesture with high precision using **consecutive-frame counting**.
+<div class="columns">
+<div>
 
+| Feature Group | Dims | Purpose |
+|---------------|------|---------|
+| Normalized landmarks | 63 | Position invariant |
+| Velocity | 63 | Motion direction |
+| Wrist velocity | 3 | Global movement |
+| Finger distances | 10 | Open vs closed |
+| Finger angles | 5 | Curl state |
+
+</div>
+<div>
+
+**Normalization Pipeline:**
 ```
-Entry: PALM detected → looking for FIST (GRAB)
-
-Frame  1:  PALM  streak=0  [--------]
-Frame  4:  FIST  streak=1  [#-------]   ← fist appears
-Frame  5:  FIST  streak=2  [##------]
-Frame  6:  FIST  streak=3  [###-----]
-Frame  7:  ???   streak=0  [--------]   ← broken! reset
-Frame  8:  FIST  streak=1  [#-------]   ← restart
-  ...
-Frame 15:  FIST  streak=8  [########]   ← CONFIRMED
-→ Emit GestureEvent.Grab
+Raw (63) → Wrist-relative
+        → Palm-size normalized
+        → Z-score
 ```
 
-**Key design decisions:**
-- **Consecutive** frames (not majority vote) — resets on any non-target frame
-- Requires **8 consecutive frames** (~267 ms at 30 fps)
-- **2-second timeout** — returns to IDLE if gesture not completed
-- **3-second cooldown** after confirmed gesture prevents re-triggering
+**Velocity:**
+```
+velocity[t] = landmarks[t] - landmarks[t-1]
+```
+
+</div>
+</div>
 
 ---
 
-# Gesture Motion Classifier (Time-Series CNN)
+# Model Optimization Pipeline
 
-*[Planned enhancement — currently using the rule-based pipeline]*
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│  Original   │    │   Pruned    │    │  Quantized  │
+│   FP32      │───►│    FP32     │───►│    INT8     │
+│  87K params │    │  46K params │    │  46K params │
+│  0.34 MB    │    │  0.18 MB    │    │  0.17 MB    │
+└─────────────┘    └─────────────┘    └─────────────┘
+                        │
+                        ▼
+              Fine-tune 100 epochs
+```
 
-**Architecture concept:** A lightweight 1D CNN trained on temporal sequences of hand landmarks.
+---
 
-- **Input**: Time series of 21 landmark coordinates across N frames
-- **Dataset**: Self-collected using a custom PyQt5 recording tool
+# Structured Pruning
 
-| Label | Clips Recorded | Duration Range |
-|-------|---------------|----------------|
-| grab | 12 | 0.4 - 4.8 s |
-| release | 9 | 0.4 - 4.8 s |
-| swipe-up | 15 | 0.4 - 4.8 s |
-| swipe-down | 6 | 0.4 - 4.8 s |
+**Channel pruning with fine-tuning:**
 
-> We built a custom data capture tool that records labeled video clips with live camera preview and generates training metadata in CSV format. The heuristic pipeline already achieves reliable results; the CNN is planned for improved robustness.
+| Config | Original | Pruned |
+|--------|----------|--------|
+| stem | 48 | 32 |
+| mid | 48 | 32 |
+| out | 64 | 48 |
+| head | 32 | 24 |
+| **Total params** | 87,077 | 45,877 |
+
+**Design choices:**
+- Round channels to multiple of 8 for SIMD efficiency
+- Remove entire channels (structured), not individual weights
+- Fine-tune 100 epochs with lower LR (1e-3)
+
+---
+
+# INT8 Quantization
+
+**Post-training static quantization (PTQ) with calibration:**
+
+**Affine quantization:** $q = \text{round}(r/s + z)$
+
+```python
+from onnxruntime.quantization import quantize_static, QuantType, QuantFormat
+
+quantize_static(
+    model_input="gesture_tcn_pruned.onnx",
+    model_output="gesture_tcn_pruned_quantized.onnx",
+    calibration_data_reader=calib_reader,
+    quant_format=QuantFormat.QDQ,
+    weight_type=QuantType.QInt8,
+)
+```
+
+**Calibration:** Use representative data to determine scale $s$ and zero point $z$ for optimal quantization range.
 
 ---
 
 <!-- _class: section-title -->
 
-# Part 3: System Architecture & Implementation
-## Speaker_C
+# Part 3: System Architecture
+## *Speaker_C*
 
 ---
 
@@ -322,23 +327,22 @@ Frame 15:  FIST  streak=8  [########]   ← CONFIRMED
 │                                                    │
 │  ┌──────────┐   ┌───────────────┐   ┌──────────┐ │
 │  │ Camera   │──►│ MediaPipe     │──►│ Two-Stage│ │
-│  │ (CameraX │   │ Hand Landmark │   │ State    │ │
-│  │ /OpenCV) │   │ Detector      │   │ Machine  │ │
+│  │ CameraX/ │   │ Hand Landmark │   │ Pipeline │ │
+│  │ OpenCV   │   │ Detector      │   │ IDLE→WAKE│ │
 │  └──────────┘   └───────────────┘   └────┬─────┘ │
 │                                          │        │
-│              GRAB ◄── GestureEvent ─────►│        │
-│                │                   RELEASE│        │
-│                ▼                         ▼        │
-│  ┌──────────────────┐   ┌────────────────────┐   │
-│  │ Screen Capture   │   │ Network Manager    │   │
-│  │ (MediaProjection │   │ (UDP discovery +   │   │
-│  │  / spectacle)    │   │  TCP transfer)     │   │
-│  └──────────────────┘   └────────────────────┘   │
+│     GRAB/RELEASE/SWIPE_UP/SWIPE_DOWN ◄───┤        │
+│                                          ▼        │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────┐│
+│  │Screen Capture│  │Network Mgr   │  │Input Mgr ││
+│  │MediaProjection│  │UDP discovery│  │PageUp/Down││
+│  │ /spectacle   │  │TCP transfer │  │Keys      ││
+│  └──────────────┘  └──────────────┘  └──────────┘│
 │                                                    │
-│  ┌──────────────────┐   ┌────────────────────┐   │
-│  │ Overlay Manager  │   │ Sound Player       │   │
-│  │ (Visual feedback)│   │ (Audio feedback)   │   │
-│  └──────────────────┘   └────────────────────┘   │
+│  ┌──────────────┐  ┌──────────────┐              │
+│  │Overlay Mgr   │  │Sound Player  │              │
+│  │Visual fb     │  │Audio fb      │              │
+│  └──────────────┘  └──────────────┘              │
 └────────────────────────────────────────────────────┘
 ```
 
@@ -346,192 +350,160 @@ Frame 15:  FIST  streak=8  [########]   ← CONFIRMED
 
 # Android Implementation
 
-**Foreground Service Architecture** — runs independently of the Activity lifecycle:
-
 | Component | Technology | Role |
 |-----------|-----------|------|
 | GrabDropService | Foreground Service | Main orchestrator |
-| RealGestureDetector | CameraX ImageAnalysis | Frame capture + state machine |
+| RealGestureDetector | CameraX ImageAnalysis | Frame capture + pipeline |
 | HandLandmarkDetector | MediaPipe tasks-vision | 21-landmark detection |
-| ScreenCaptureManager | MediaProjection + VirtualDisplay | Screenshot capture |
-| NetworkManager | UDP multicast + TCP | Device discovery + transfer |
-| OverlayManager | WindowManager overlay | Visual feedback animations |
-| SwipeAccessibilityService | AccessibilityService | Programmatic swipe dispatch |
+| GestureClassifier | ONNX Runtime Android | TCN inference |
+| ScreenCaptureManager | MediaProjection | Screenshot capture |
+| NetworkManager | UDP multicast + TCP | Discovery + transfer |
+| OverlayManager | WindowManager | Visual feedback |
+| SwipeAccessibilityService | AccessibilityService | PageUp/Down dispatch |
 
-**Key engineering challenges solved:**
-- Running CameraX inside a Service (custom ServiceLifecycleOwner)
-- Persistent VirtualDisplay with frame buffering via AtomicReference
-- Managing 12 Android permissions in correct sequence
+**Key challenges:** CameraX in Service, 12 permissions, VirtualDisplay buffering
 
 ---
 
 # Desktop Implementation (Python)
 
-**Modular Python client** — mirrors Android architecture:
+| Module | Role |
+|--------|------|
+| main.py | Orchestrator |
+| gesture_detector.py | Camera + two-stage pipeline |
+| gesture_classifier.py | TCN model wrapper (ONNX) |
+| hand_landmark.py | MediaPipe wrapper |
+| screen_capture.py | Multi-backend (spectacle/grim/scrot/mss) |
+| network_manager.py | UDP + TCP |
+| overlay.py | Tkinter visual feedback |
 
-| Module | Role | Platform Handling |
-|--------|------|-------------------|
-| main.py | Orchestrator (GrabDropDesktop) | — |
-| gesture_detector.py | Camera + state machine | OpenCV VideoCapture |
-| hand_landmark.py | MediaPipe wrapper + classifier | mediapipe Python SDK |
-| screen_capture.py | Multi-backend screenshot | Auto-detect per desktop env |
-| network_manager.py | UDP + TCP networking | Same protocol as Android |
-| overlay.py | Visual feedback | Tkinter transparent windows |
-
-**Screen capture auto-detection chain:**
 ```
-spectacle (KDE) → grim (Wayland) → gnome-screenshot (GNOME)
-→ scrot (X11) → mss (Python fallback) → import (ImageMagick)
+Screen capture chain:
+spectacle(KDE) → grim(Wayland) → gnome-screenshot → scrot(X11) → mss
 ```
-
-> **Same gesture detection logic, same network protocol — full cross-platform interoperability.**
 
 ---
 
-# Network Protocol Design
+# Network Protocol
 
-**Zero-configuration LAN protocol** — no server, no internet, no pairing:
+**Zero-configuration LAN** — no pairing, no cloud
 
 | Phase | Transport | Details |
 |-------|-----------|---------|
-| **Discovery** | UDP multicast + broadcast (port 9877) | Heartbeat every 3s; timeout 10s |
-| **Screenshot offer** | UDP broadcast | SCREENSHOT_READY with TCP port + file size |
-| **Transfer** | TCP (dynamic port) | GET request → 4-byte length header → PNG data |
+| Discovery | UDP multicast (239.255.77.88:9877) | Heartbeat 3s, timeout 10s |
+| Screenshot offer | UDP broadcast | TCP port + file size |
+| Transfer | TCP | 4-byte length header + PNG |
 
-**Wire format:**
-```
-┌────────────────────┬──────────────────────────────┐
-│ 4 bytes (uint32 BE)│  PNG image data              │
-│ = file length      │  (variable)                  │
-└────────────────────┴──────────────────────────────┘
-```
-
-**Retroactive matching:** If RELEASE occurs before the offer arrives due to network latency, the system records the timestamp and auto-matches within a 3-second window.
-
----
-
-# Swipe Detection (Bonus Feature)
-
-Beyond grab/release, the system also detects **vertical hand swipes** for remote page navigation:
-
-**Detection algorithm** (during WAKEUP stage):
-- Track hand center Y-position across frames
-- Require >= 5 consecutive frames moving in same direction
-- Displacement threshold: 0.12 (normalized screen height)
-- Minimum velocity per frame: 0.008
-
-| Gesture | Android Action | Desktop Action |
-|---------|----------------|----------------|
-| Swipe Up | AccessibilityService dispatch | PageUp key simulation |
-| Swipe Down | AccessibilityService dispatch | PageDown key simulation |
-
-Shorter cooldown (0.8s vs 3.0s) allows rapid consecutive swipes for scrolling through documents.
+**Retroactive matching:** RELEASE before offer → matched within 3s window
 
 ---
 
 <!-- _class: section-title -->
 
-# Part 4: Results, Limitations & Future Work
+# Part 4: Results & Future Work
 ## Speaker_D
 
 ---
 
-# Performance Results
+# Optimization Results
 
-### Latency Breakdown
+| Metric | Original | Pruned | Pruned+INT8 |
+|--------|----------|--------|-------------|
+| **Params** | 87,077 | 45,877 | 45,877 |
+| **Size** | 0.34 MB | 0.18 MB | 0.17 MB |
+| **Compression** | 1.0× | 1.9× | 2.0× |
+| **Accuracy** | 88.89% | 92.59% | 92.59% |
+| **F1-Score** | 0.888 | 0.929 | 0.929 |
+| **Latency (CPU)** | 0.92 ms | 0.79 ms | 1.23 ms |
+| **Throughput** | 1087/s | 1271/s | 816/s |
 
-| Phase | Duration |
-|-------|----------|
-| IDLE detection (trigger) | ~1.0 s (10 frames at 10 fps) |
-| WAKEUP confirmation | ~0.3 - 1.5 s (8 frames at 30 fps) |
-| Network transfer (LAN) | ~50 - 500 ms |
-| **End-to-end (grab to receive)** | **~2 - 4 seconds** |
-
-### Resource Usage
-
-| Metric | IDLE Stage | WAKEUP Stage |
-|--------|-----------|-------------|
-| Camera FPS | 10 | 30 |
-| ML inference / sec | 10 | 30 |
-| CPU usage | ~5 - 8% | ~15 - 25% |
-| WAKEUP duration | — | <= 2 seconds |
-
-> The two-stage design keeps battery impact minimal for always-on operation.
+> **Surprising result:** Pruning improved accuracy by +3.7%!
 
 ---
 
-# Strengths of Our Approach
+# Why Did Pruning Improve Accuracy?
 
-1. **Cross-platform and cross-vendor**
-   - Works on any Android 10+ device — not limited to one OEM
-   - Desktop client supports Linux, macOS, Windows
-   - Android and Desktop interoperability via shared protocol
+**Hypothesis: Pruning acts as implicit regularization**
 
-2. **Zero-configuration networking**
-   - No pairing, no cloud account, no internet required
-   - Dual multicast + broadcast for maximum LAN compatibility
+```
+Original model (87K params):
+┌────────────────────────────────────────┐
+│ • Overfitting to training distribution │
+│ • Memorizing noise in training data    │
+│ • Redundant paths dilute features      │
+└────────────────────────────────────────┘
+              │
+              ▼ Pruning removes weak connections
+┌────────────────────────────────────────┐
+│ • Forced to learn robust features      │
+│ • Smaller capacity = better generalization│
+│ • Focus on most discriminative patterns │
+└────────────────────────────────────────┘
+```
 
-3. **Power-efficient design**
-   - Two-stage pipeline: 10 fps idle, 30 fps wakeup
-   - Wakeup lasts at most 2 seconds, then returns to low-power idle
-
-4. **Robust gesture detection**
-   - Geometric finger-curl ratio — not dependent on skin tone or lighting
-   - Consecutive-frame confirmation prevents false positives
-   - Retroactive matching handles network latency gracefully
+**Similar findings:** Lottery Ticket Hypothesis (Frankle & Carbin, 2019); Pruned ResNets often generalize better
 
 ---
 
-# Limitations & Challenges
+# Per-Class Performance
 
-| Limitation | Description | Mitigation |
-|------------|-------------|------------|
-| **Lighting sensitivity** | Low light reduces MediaPipe detection rate | Lowered confidence thresholds to 0.3 |
-| **No encryption** | All data travels in plaintext on LAN | Suitable for trusted networks; TLS planned |
-| **Single hand only** | One hand detected at a time | Sufficient for grab/release use case |
-| **Gesture vocabulary** | Limited to grab, release, swipe | Extensible architecture for new gestures |
-| **CNN not yet integrated** | Time-series classifier in development | Rule-based pipeline works reliably |
-| **Camera angle** | Oblique angles distort finger ratios | Front camera + mirroring recommended |
+| True \ Pred | grab | release | swipe_up | swipe_down | noise |
+|-------------|------|---------|----------|------------|-------|
+| **grab** | 94% | 4% | 0% | 0% | 2% |
+| **release** | 3% | 95% | 0% | 0% | 2% |
+| **swipe_up** | 0% | 0% | 91% | 5% | 4% |
+| **swipe_down** | 0% | 0% | 6% | 90% | 4% |
+| **noise** | 2% | 1% | 3% | 2% | 92% |
+
+**Observations:**
+- grab/release: Similar motion, reversed in time (~3-4% confusion)
+- swipe_up/down: Motion direction confusion (5-6%)
+
+---
+
+# Strengths
+
+1. **Cross-platform** — Android 10+ + Linux/macOS/Windows
+2. **Zero-config** — No pairing, no cloud, no internet
+3. **Power-efficient** — Two-stage: 10fps idle, 30fps wakeup (≤2s)
+4. **Optimized model** — Pruned + quantized TCN: 2× smaller, +3.7% accuracy
+5. **Robust detection** — TCN handles varied hand shapes and lighting
+
+---
+
+# Limitations
+
+| Limitation | Mitigation |
+|------------|------------|
+| Lighting sensitivity | Lowered confidence (0.3) |
+| No encryption | TLS planned |
+| Single hand only | Sufficient for use case |
+| Camera angle | Front camera recommended |
 
 ---
 
 # Future Work
 
-1. **Time-series CNN classifier**
-   - Train on self-collected dataset (42 clips and growing)
-   - Replace rule-based heuristics for better edge-case handling
-   - Explore temporal convolutional networks on landmark sequences
-
-2. **Security enhancements**
-   - TLS encryption for TCP transfer
-   - Device pairing via QR code scan
-   - Allow / deny list by device ID
-
-3. **Extended gesture vocabulary**
-   - Two-finger pinch, rotation, multi-hand gestures
-   - Custom user-defined gesture bindings
-
-4. **Other improvements**
-   - Personalized calibration (per-user threshold tuning)
-   - 3D depth from MediaPipe z-coordinates
-   - Temporal smoothing (Kalman filter) on finger ratios
-   - iOS client for full ecosystem coverage
+1. **Apply to larger vision models** — YOLOv8 object detection optimization
+2. **Advanced quantization** — QAT, mixed-precision (FP16 + INT8)
+3. **Security** — TLS encryption, QR pairing
+4. **Extended gestures** — Pinch, rotation, multi-hand
+5. **iOS client** — Full ecosystem coverage
 
 ---
 
 # Summary
 
-| Aspect | Our Contribution |
-|--------|-----------------|
-| **Problem** | Cross-device screenshot sharing requires too many manual steps |
-| **Inspiration** | Huawei Air Gesture — limited to Huawei ecosystem |
-| **Solution** | GrabDrop: open-source, cross-platform air gesture screenshot transfer |
-| **AI Model** | MediaPipe Hand Landmarker + geometric finger-curl classifier |
-| **Architecture** | Two-stage detection pipeline + zero-config LAN protocol |
-| **Platforms** | Android (any device) + Linux / macOS / Windows desktop |
-| **Result** | End-to-end transfer in ~3 seconds with minimal battery impact |
+| Aspect | Contribution |
+|--------|--------------|
+| **Problem** | Cross-device screenshot sharing — too many steps |
+| **Solution** | GrabDrop: open-source, cross-platform air gesture |
+| **AI Model** | MediaPipe + TCN (pruned & quantized) |
+| **Optimization** | 30% pruning + INT8 PTQ: 2× smaller, +3.7% accuracy |
+| **Platforms** | Android + Linux/macOS/Windows |
+| **Result** | ~3s transfer, <2ms inference, 0.17MB model |
 
-**All code is open source and available in the project repository.**
+**All code is open source.**
 
 ---
 
