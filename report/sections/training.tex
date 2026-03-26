@@ -1,0 +1,80 @@
+\section{Model Training}
+\label{sec:training}
+
+\subsection{Training Setup}
+
+The GestureTCN model is trained using PyTorch on a single GPU.
+Table~\ref{tab:hyperparams} summarizes the key hyperparameters.
+
+\begin{table}[ht]
+\centering
+\caption{Training hyperparameters.}
+\label{tab:hyperparams}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Hyperparameter} & \textbf{Value} \\
+\midrule
+Batch size & 32 \\
+Maximum epochs & 300 \\
+Optimizer & AdamW \\
+Learning rate & $2 \times 10^{-3}$ \\
+Weight decay & $1 \times 10^{-3}$ \\
+LR scheduler & Cosine annealing ($\eta_{\min} = 10^{-5}$) \\
+Gradient clipping & Max norm 2.0 \\
+Early stopping patience & 40 epochs \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Loss Function}
+
+We use cross-entropy loss with label smoothing ($\alpha = 0.1$) and
+inverse-frequency class weights:
+\begin{equation}
+  \mathcal{L} = -\sum_{c=1}^{C} w_c \, \tilde{y}_c \log p_c,
+  \label{eq:loss}
+\end{equation}
+where $\tilde{y}_c = (1-\alpha) \cdot y_c + \alpha / C$ is the
+smoothed label, $p_c$ is the predicted probability via softmax, and
+$w_c$ is the class weight computed as $w_c = N / (C \cdot n_c)$ with
+$n_c$ being the number of samples in class $c$. Label smoothing
+prevents overconfident predictions and improves generalization, while
+class weights address the moderate class imbalance in the dataset
+(e.g., \texttt{swipe\_up} has the fewest training samples and
+receives weight 1.259 versus 0.867 for \texttt{release}).
+
+\subsection{Class Balancing}
+
+In addition to weighted loss, we employ a \texttt{WeightedRandomSampler}
+that assigns sampling probability inversely proportional to class
+frequency. This ensures each class is sampled approximately equally
+within each epoch, further mitigating class imbalance.
+
+\subsection{Online Augmentation}
+
+Beyond the offline augmentation described in
+Section~\ref{sec:data}, the PyTorch \texttt{Dataset} applies
+stochastic augmentation at each access:
+\begin{itemize}[leftmargin=*]
+  \item Coordinate jitter ($\sigma = 0.002$) with 50\% probability.
+  \item Time warping with 30\% probability.
+\end{itemize}
+This means the model sees slightly different variants of each sample
+every epoch, further improving generalization.
+
+\subsection{Training Dynamics}
+
+Training terminated after 68~epochs via early stopping, with the best
+test accuracy of 89.66\% achieved at epoch~28.
+Figure~\ref{fig:training_curves} shows the training and test loss/accuracy curves. The cosine annealing schedule
+smoothly reduces the learning rate from $2\!\times\!10^{-3}$ to
+$10^{-5}$, enabling fine-grained convergence in later epochs.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.95\linewidth]{training_curves}
+  \caption{Training curves: loss (left) and accuracy (right) over
+    68~epochs. Early stopping was triggered at epoch~68 with the best
+    model saved at epoch~28.}
+  \label{fig:training_curves}
+\end{figure}

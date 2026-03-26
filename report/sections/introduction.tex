@@ -1,0 +1,72 @@
+\section{Introduction}
+\label{sec:introduction}
+
+The proliferation of multi-device computing environments has created a
+persistent need for seamless content sharing across heterogeneous platforms.
+While cloud-based solutions such as AirDrop~\cite{apple2023airdrop},
+Google Nearby Share~\cite{google2023nearby}, and Huawei Share
+address this need, they typically require vendor lock-in, account
+authentication, or explicit pairing protocols. In scenarios
+where privacy, latency, and simplicity are paramount---for example, in
+enterprise environments behind firewalls, classroom demonstrations, or
+offline field deployments---a lightweight, infrastructure-free alternative
+is desirable.
+
+Concurrently, advances in hand gesture recognition have made contactless
+human--computer interaction increasingly practical. MediaPipe
+Hands~\cite{zhang2020mediapipe} provides robust real-time hand landmark
+detection on commodity hardware, while lightweight neural architectures
+such as Temporal Convolutional Networks (TCNs)~\cite{bai2018empirical,
+lea2017temporal} enable accurate temporal pattern recognition with
+minimal computational overhead.
+
+In this work, we present \textbf{GrabDrop}, a system that bridges these
+two domains by enabling \emph{gesture-driven screenshot sharing} over a
+local area network. The key idea is intuitive: a user \emph{grabs} a
+screenshot by closing their hand (palm to fist), and another user
+\emph{releases} it by opening their hand (fist to palm) on a different
+device. The transfer happens instantly over WiFi with no cloud, no
+accounts, and no pairing required. Additionally, swipe gestures (hand
+moving up or down) enable remote page scrolling.
+
+\subsection{Contributions}
+
+The main contributions of this project are as follows:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{End-to-end gesture recognition pipeline.} We design a
+    complete pipeline from raw video capture through hand landmark
+    extraction (MediaPipe), feature engineering (144~dimensions),
+    temporal classification (TCN), and gesture event emission, operating
+    in real-time with a two-stage (Idle/Wakeup) power-aware detection
+    scheme.
+
+  \item \textbf{Model optimization for edge deployment.} We apply
+    structured pruning (30\% channel reduction, yielding
+    1.9$\times$~compression from 87K to 46K parameters) followed by
+    INT8 static quantization, producing a deployment-ready ONNX model
+    of approximately 140\,KB with minimal accuracy degradation.
+
+  \item \textbf{Cross-platform application.} We implement native clients
+    for Android (Kotlin/Jetpack~Compose) and Desktop (Python), sharing a
+    unified UDP/TCP network protocol for device discovery and screenshot
+    transfer. Both platforms support dual detection backends (Neural
+    Network and Legacy rule-based) with automatic fallback.
+
+  \item \textbf{Comprehensive data augmentation.} We employ seven
+    augmentation techniques including temporal reversal with label
+    remapping, expanding a small video dataset into thousands of
+    training samples.
+\end{enumerate}
+
+The remainder of this report is organized as follows:
+Section~\ref{sec:related_work} reviews related work;
+Section~\ref{sec:data} describes data collection and preprocessing;
+Section~\ref{sec:methodology} details the gesture detection methodology
+and TCN architecture;
+Section~\ref{sec:training} presents the training procedure;
+Section~\ref{sec:deployment} covers model optimization and deployment;
+Section~\ref{sec:application} describes the cross-platform application
+design;
+Section~\ref{sec:results} reports experimental results; and
+Section~\ref{sec:conclusion} concludes with future directions.

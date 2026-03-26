@@ -1,0 +1,108 @@
+\section{Model Optimization and Deployment}
+\label{sec:deployment}
+
+Deploying the trained GestureTCN on edge devices requires reducing both
+model size and inference latency. We apply a three-step optimization
+pipeline: structured pruning, ONNX export, and INT8 quantization.
+
+\subsection{Structured Pruning}
+
+Unlike unstructured pruning (which zeroes individual weights but
+maintains tensor dimensions), \emph{structured pruning} removes entire
+convolutional channels, producing a genuinely smaller
+model~\cite{li2017pruning}. We apply a uniform channel reduction ratio
+of 30\%, with channel counts rounded to multiples of~8 for SIMD
+alignment:
+
+\begin{table}[ht]
+\centering
+\caption{Channel dimensions before and after structured pruning.}
+\label{tab:pruning}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Component} & \textbf{Original} & \textbf{Pruned} \\
+\midrule
+Stem channels & 48 & 32 \\
+Mid-block channels & 48 & 32 \\
+Output channels & 64 & 48 \\
+Head hidden units & 32 & 24 \\
+\midrule
+Total parameters & 87,077 & 45,877 \\
+Model size (FP32) & 0.34\,MB & 0.18\,MB \\
+Compression ratio & 1.0$\times$ & 1.9$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The pruned model is a new instance of \texttt{GestureTCN} with reduced
+channel dimensions. It is trained from scratch for 100~epochs using the
+same dataset and a lower learning rate ($10^{-3}$), achieving a test
+accuracy of 82.76\%.
+
+\subsection{ONNX Export}
+
+We export the pruned model to ONNX (Open Neural Network
+Exchange)~\cite{onnxruntime} format using PyTorch's tracing-based
+exporter. The export specifies:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Dynamic batch axis}: Allows variable batch sizes at
+    inference time.
+  \item \textbf{Opset version 18}: Ensures compatibility with modern
+    ONNX Runtime versions.
+  \item \textbf{Named I/O}: Input tensor named \texttt{``input''}
+    (shape $[B, 144, 30]$), output tensor named \texttt{``logits''}
+    (shape $[B, 5]$).
+\end{itemize}
+Model validity is verified using \texttt{onnx.checker.check\_model()}.
+
+\subsection{INT8 Static Quantization}
+
+We apply static quantization via ONNX
+Runtime~\cite{jacob2018quantization}, converting FP32 weights to
+signed 8-bit integers. The process consists of:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Calibration}: Real training data is fed through the
+    FP32 ONNX model to observe the range of activation values at each
+    layer.
+  \item \textbf{Scale computation}: Per-tensor scale and zero-point
+    values are computed to map FP32 ranges to INT8:
+    $x_{\text{int8}} = \text{round}(x_{\text{fp32}} / s) + z$.
+  \item \textbf{QDQ insertion}: Quantize-Dequantize (QDQ) nodes are
+    inserted into the computation graph, enabling the runtime to fuse
+    quantized operations for optimal performance.
+\end{enumerate}
+
+The final quantized model is approximately 140\,KB---small enough
+to be bundled directly in a mobile application package.
+
+\subsection{Deployment Configuration}
+
+A \texttt{config.json} file is generated alongside the ONNX model,
+containing all information required for inference on edge devices:
+class names, sequence length, feature dimension, normalization
+statistics ($\boldsymbol\mu$ and $\boldsymbol\sigma$ vectors of
+dimension~144), landmark topology (finger chains, joint pairs,
+tip/base indices), and pruned channel dimensions. This ensures
+complete self-containment of the deployed artifact.
+
+\subsection{Optimization Summary}
+
+Table~\ref{tab:optimization_summary} summarizes the full optimization
+pipeline.
+
+\begin{table}[ht]
+\centering
+\caption{Model optimization pipeline summary.}
+\label{tab:optimization_summary}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Stage} & \textbf{Params} & \textbf{Size} & \textbf{Accuracy} & \textbf{Format} \\
+\midrule
+Original (FP32) & 87,077 & 0.34\,MB & 89.66\% & PyTorch \\
+Pruned (FP32) & 45,877 & 0.18\,MB & 82.76\% & PyTorch \\
+Pruned ONNX (FP32) & 45,877 & $\sim$0.18\,MB & 82.76\% & ONNX \\
+Pruned + Quantized (INT8) & 45,877 & $\sim$0.05\,MB & $\sim$82\% & ONNX \\
+\bottomrule
+\end{tabular}
+\end{table}

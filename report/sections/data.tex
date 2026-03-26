@@ -1,0 +1,109 @@
+\section{Data Collection and Preprocessing}
+\label{sec:data}
+
+\subsection{Dataset}
+
+We collected a custom dataset of hand gesture video clips recorded via
+webcam and phone cameras. Each clip captures a single gesture instance
+and is labeled as one of five classes: \texttt{grab} (palm $\to$ fist),
+\texttt{release} (fist $\to$ palm), \texttt{swipe\_up},
+\texttt{swipe\_down}, and \texttt{noise} (invalid/unrecognized motions).
+The dataset is split into training and test sets, organized by class.
+
+\subsection{Hand Landmark Extraction}
+
+For each frame of a video clip, we use MediaPipe Hand
+Landmarker~\cite{zhang2020mediapipe} to extract 21~3D hand landmarks,
+producing a 63-dimensional raw feature vector per frame
+($21 \times 3$ coordinates: $x$, $y$, $z$). Coordinates $x$ and $y$
+are normalized to $[0, 1]$ relative to the image dimensions, and $z$
+represents depth relative to the wrist. If MediaPipe fails to detect a
+hand in a given frame, the result is marked as missing. Videos with
+fewer than 10\% valid frames are discarded as low-quality.
+
+\subsection{Missing Frame Interpolation}
+
+Because MediaPipe may fail to detect hands in certain frames (due to
+motion blur, occlusion, or poor lighting), we apply linear interpolation
+to fill gaps between valid detections. For missing frames at the
+boundaries of a video, linear extrapolation from the two nearest valid
+frames is used. This ensures a complete landmark sequence without
+discontinuities.
+
+\subsection{Temporal Resampling}
+
+Since gesture videos vary in duration, we resample every landmark
+sequence to a fixed length of $T = 30$~frames using linear
+interpolation along the time axis. This standardization ensures
+uniform input dimensions for the neural network regardless of the
+original video frame rate or gesture speed.
+
+\subsection{Feature Engineering}
+\label{subsec:features}
+
+Raw landmark coordinates are not ideal inputs for classification, as they
+are sensitive to hand position in the frame and distance from the camera.
+We compute a 144-dimensional feature vector per frame from the 63~raw
+values, as summarized in Table~\ref{tab:features}.
+
+\begin{table}[ht]
+\centering
+\caption{Feature engineering: 63 raw landmark values $\to$ 144
+  engineered features per frame.}
+\label{tab:features}
+\begin{tabular}{@{}llp{6.5cm}@{}}
+\toprule
+\textbf{Feature Group} & \textbf{Dims} & \textbf{Description} \\
+\midrule
+Normalized landmarks & 63 & Landmarks relative to the wrist, divided by palm size (distance from wrist to middle finger MCP). Translation- and scale-invariant. \\
+Velocity & 63 & Frame-to-frame difference of normalized landmarks. Captures motion direction and speed. \\
+Wrist velocity & 3 & Absolute wrist position change between frames. Critical for swipe detection. \\
+Finger pair distances & 10 & Euclidean distances between all $\binom{5}{2}=10$ fingertip pairs. Measures hand openness. \\
+Finger curl angles & 5 & Bending angle (via $\arccos$) for each of the 5~fingers. Distinguishes extended from curled. \\
+\midrule
+\textbf{Total} & \textbf{144} & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Data Augmentation}
+
+To expand our limited video dataset, we apply seven augmentation
+techniques during preprocessing:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Time crops:} Extract sub-sequences at different
+    start/end positions (up to 9 crops per video).
+  \item \textbf{Jitter:} Add small Gaussian noise
+    ($\sigma = 0.003$) to landmark coordinates (3~variants).
+  \item \textbf{Rotation:} Rotate landmarks around the wrist by
+    $\{-15, -10, -5, +5, +10, +15\}$~degrees (6~variants).
+  \item \textbf{Scale:} Scale hand size by factors
+    $\{0.85, 0.9, 1.1, 1.15\}$ relative to the wrist (4~variants).
+  \item \textbf{Time warp:} Non-linearly stretch/compress along the
+    time axis (2~variants).
+  \item \textbf{Speed change:} Uniformly speed up or slow down the
+    gesture by a random factor in $[0.8, 1.2]$ (2~variants).
+  \item \textbf{Time reversal with label remapping:} Reversing a
+    \texttt{grab} produces a valid \texttt{release} and vice versa;
+    reversing \texttt{swipe\_up} yields \texttt{swipe\_down}
+    (1~variant with corrected label).
+\end{enumerate}
+
+This pipeline yields approximately 20--30 augmented samples per
+original video. Additionally, online augmentation (50\% jitter,
+30\% time warp) is applied stochastically during training for
+further regularization.
+
+\subsection{Normalization Statistics}
+
+We compute per-feature mean $\mu_d$ and standard deviation $\sigma_d$
+across all training samples and all time steps. During both training
+and inference, features are $z$-score normalized:
+\begin{equation}
+  \hat{x}_d = \frac{x_d - \mu_d}{\sigma_d + \epsilon}, \quad
+  \epsilon = 10^{-8}.
+  \label{eq:normalize}
+\end{equation}
+The statistics are serialized alongside the model for deployment
+(see Section~\ref{sec:deployment}).

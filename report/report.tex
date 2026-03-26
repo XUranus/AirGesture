@@ -1,0 +1,106 @@
+\documentclass[11pt,a4paper]{article}
+
+% -- Encoding & Fonts --
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+
+% -- Layout --
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+
+% -- Mathematics --
+\usepackage{amsmath,amssymb}
+
+% -- Graphics & Figures --
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{float}
+\usepackage{subcaption}
+
+% -- Tables --
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{tabularx}
+
+% -- Code Listings --
+\usepackage{listings}
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  keywordstyle=\color{blue},
+  commentstyle=\color{green!50!black},
+  stringstyle=\color{red!60!black},
+}
+
+% -- Colors & Hyperlinks --
+\usepackage[dvipsnames]{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
+
+% -- Bibliography --
+\usepackage[numbers,sort&compress]{natbib}
+
+% -- Misc --
+\usepackage{enumitem}
+
+% ==============================================================
+% Title
+% ==============================================================
+\title{%
+  \textbf{GrabDrop: Cross-Platform Screenshot Sharing via Hand Gesture Recognition} \\[6pt]
+  \large DSAI5201 -- AI and Big Data Computing in Practice \\
+  Spring 2026 -- Group Project Report
+}
+\author{
+  Author\_A \and Author\_B \and Author\_C \and Author\_D
+}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+% -- Abstract --
+\begin{abstract}
+We present \textbf{GrabDrop}, a cross-platform application that enables
+screenshot sharing between devices using natural hand gestures over a local
+area network, without relying on cloud services, user accounts, or device
+pairing. Users perform a \emph{grab} gesture (closing the hand from palm to
+fist) to capture and broadcast a screenshot, and a \emph{release} gesture
+(opening the hand from fist to palm) on another device to receive it. The
+system additionally supports \emph{swipe} gestures for remote page scrolling.
+At its core, GrabDrop employs a lightweight Temporal Convolutional Network
+(TCN) trained on 144-dimensional hand landmark features extracted via
+MediaPipe. The model is optimized for edge deployment through structured
+pruning (1.9$\times$ compression) and INT8 quantization, resulting in a final
+model size of approximately 140\,KB. We develop native clients for both
+Android (Kotlin/Jetpack Compose) and Desktop (Python) with a unified UDP/TCP
+network protocol enabling seamless cross-platform interoperability.
+Experimental results demonstrate an overall test accuracy of approximately
+89.7\% across five gesture classes, with the optimized model running in
+real-time on commodity hardware.
+\end{abstract}
+
+% -- Sections (one file per section for team collaboration) --
+\input{sections/introduction}
+\input{sections/related_work}
+\input{sections/data}
+\input{sections/methodology}
+\input{sections/training}
+\input{sections/deployment}
+\input{sections/application}
+\input{sections/results}
+\input{sections/conclusion}
+
+% -- References --
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+% -- Mandatory Statement of Contribution --
+\newpage
+\input{sections/contribution}
+
+\end{document}

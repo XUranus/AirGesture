@@ -1,0 +1,114 @@
+\section{Methodology}
+\label{sec:methodology}
+
+\subsection{System Overview}
+
+GrabDrop employs a two-stage gesture detection pipeline shared across
+both the Neural Network (TCN) and Legacy (rule-based) backends
+(Figure~\ref{fig:two-stage}):
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{IDLE stage} ($\sim$10\,FPS): Low-power scanning for
+    hand presence. A sliding window of 10~frames tracks hand detection
+    counts; when $\geq 8$ frames contain a detected hand, the system
+    transitions to the WAKEUP stage.
+  \item \textbf{WAKEUP stage} ($\sim$30\,FPS): High-precision gesture
+    classification. Runs for at most 2~seconds before timing out and
+    returning to IDLE.
+\end{enumerate}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.85\linewidth]{two-stage-pipeline}
+  \caption{Two-stage detection pipeline: IDLE (low power) $\to$ WAKEUP
+    (high precision). The system spends most time in IDLE, consuming
+    minimal CPU.}
+  \label{fig:two-stage}
+\end{figure}
+
+\subsection{Neural Network Backend: Temporal Convolutional Network}
+
+The core gesture classifier is a Temporal Convolutional Network
+(TCN)~\cite{bai2018empirical, lea2017temporal} that classifies a
+30-frame sliding window of 144-dimensional feature vectors into one
+of five classes.
+
+\subsubsection{Causal Dilated Convolutions}
+
+The TCN uses \emph{causal} 1D convolutions: the output at time $t$
+depends only on inputs at times $\leq t$, which is essential for
+real-time inference where future frames are unavailable. \emph{Dilated}
+convolutions skip intermediate time steps to expand the receptive field
+without increasing parameters:
+
+\begin{equation}
+  y(t) = \sum_{i=0}^{k-1} w(i) \cdot x(t - d \cdot i),
+  \label{eq:dilated_conv}
+\end{equation}
+where $k$ is the kernel size, $d$ is the dilation factor, and $w$
+denotes learned filter weights. With dilations $\{1, 2, 4\}$, the
+network captures local, medium-range, and long-range temporal patterns
+respectively.
+
+\subsubsection{Residual Blocks}
+
+Each processing stage uses residual blocks with the structure:
+\[
+  \text{output} = \text{ReLU}\!\bigl(\mathcal{F}(x) + x\bigr),
+\]
+where $\mathcal{F}$ denotes two stacked causal convolutions with batch
+normalization and dropout ($p=0.15$). The skip connection $+\,x$
+facilitates gradient flow and enables the block to learn incremental
+refinements. When the channel dimension changes, a $1\!\times\!1$
+convolution serves as the skip projection.
+
+\subsubsection{Model Architecture}
+
+The full GestureTCN architecture comprises:
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Stem}: $1\!\times\!1$ convolution projecting 144 input
+    features to 48 channels, followed by batch normalization and ReLU.
+  \item \textbf{Block~1}: Residual block, $k\!=\!3$, dilation $d\!=\!1$
+    (48 channels, local patterns).
+  \item \textbf{Block~2}: Residual block, $k\!=\!3$, $d\!=\!2$
+    (48 channels, medium-range patterns).
+  \item \textbf{Block~3}: Channel block, $k\!=\!3$, $d\!=\!4$
+    (48$\to$64 channels, long-range patterns).
+  \item \textbf{Block~4}: Residual block, $k\!=\!3$, $d\!=\!1$
+    (64 channels, refinement).
+  \item \textbf{Pooling}: Adaptive average pooling across the time
+    dimension, producing a single 64-dim vector.
+  \item \textbf{Classification head}: Two fully connected layers
+    ($64 \to 32 \to 5$) with ReLU and dropout.
+\end{enumerate}
+
+The model contains only \textbf{87,077 parameters} (0.34\,MB),
+making it suitable for mobile and embedded deployment. Weights are
+initialized using Kaiming normal initialization~\cite{he2015delving}.
+
+\subsection{Legacy Backend: Rule-Based Detection}
+
+As a fallback, GrabDrop includes a rule-based detection mode that
+requires no trained model. For each frame, it computes a finger curl
+ratio:
+\begin{equation}
+  r_i = \frac{\|\text{tip}_i - \text{wrist}\|}
+             {\|\text{mcp}_i - \text{wrist}\|},
+  \label{eq:curl_ratio}
+\end{equation}
+where $\text{tip}_i$ and $\text{mcp}_i$ are the fingertip and
+metacarpophalangeal joint of finger $i$ (excluding the thumb). A finger
+is classified as \emph{extended} if $r_i > 1.3$ and \emph{curled} if
+$r_i < 0.9$. A hand is classified as \textsc{palm} when $\geq 3$
+fingers are extended, and \textsc{fist} when $\geq 3$ are curled.
+
+In the WAKEUP stage, 8~consecutive frames of the target state
+(e.g., \textsc{fist} following a \textsc{palm} trigger) confirm a
+\texttt{grab} gesture. Swipe detection uses frame-to-frame wrist
+$y$-velocity and cumulative displacement against configurable
+thresholds.
+
+If the Neural Network backend is selected but fails to load (e.g.,
+missing ONNX file), the system automatically falls back to Legacy
+mode.

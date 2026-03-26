@@ -1,0 +1,86 @@
+\section{Cross-Platform Application Design}
+\label{sec:application}
+
+GrabDrop is implemented as two native clients---Android and
+Desktop---that interoperate seamlessly via a shared network protocol.
+
+\subsection{Android Client}
+
+The Android client is built with Kotlin and Jetpack Compose
+(Material~3), targeting Android~10+ (API~29). Key architectural
+components include:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Foreground service} (\texttt{GrabDropService}): Hosts
+    the camera pipeline, gesture detector, network manager, and overlay
+    manager. Runs independently of the UI lifecycle.
+  \item \textbf{CameraX}: Provides the \texttt{ImageAnalysis} use case
+    for front camera frames at configurable frame rates.
+  \item \textbf{MediaPipe tasks-vision} (v0.10.14): Performs hand
+    landmark detection on each camera frame, running in
+    \texttt{VIDEO} mode for temporal tracking.
+  \item \textbf{ONNX Runtime Android} (v1.20.0): Executes the pruned
+    and quantized TCN model for gesture classification.
+  \item \textbf{MediaProjection}: Captures screenshots on
+    \texttt{GRAB} events.
+  \item \textbf{Overlay animations}: Window-manager-based overlays
+    provide visual feedback (flash on grab, ripple on release, wakeup
+    indicator).
+\end{itemize}
+
+\subsection{Desktop Client}
+
+The Desktop client is a Python CLI application compatible with Linux,
+macOS, and Windows. Its architecture mirrors the Android client:
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{OpenCV}: Camera capture via \texttt{VideoCapture}.
+  \item \textbf{MediaPipe Python} (v0.10.14): Hand landmark detection.
+  \item \textbf{ONNX Runtime} ($\geq$1.17.0): TCN inference.
+  \item \textbf{Platform-specific screenshot tools}: \texttt{spectacle}
+    (KDE/Wayland), \texttt{grim} (generic Wayland), \texttt{scrot}
+    (X11), \texttt{screencapture} (macOS), or \texttt{mss} (Windows).
+  \item \textbf{Tkinter overlays}: Visual feedback indicators.
+\end{itemize}
+
+\subsection{Network Protocol}
+
+Both clients share a unified zero-configuration network protocol
+operating over the local area network:
+
+\subsubsection{Device Discovery (UDP)}
+
+Each device broadcasts a JSON heartbeat message every 3~seconds via
+both multicast (\texttt{239.255.77.88:9877}) and broadcast
+(\texttt{255.255.255.255:9877}) for reliability. Messages contain a
+unique device ID, device name, and timestamp. Devices not heard from
+for 10~seconds are removed from the discovery table.
+
+\subsubsection{Screenshot Transfer (UDP + TCP)}
+
+Upon a \texttt{GRAB} event:
+\begin{enumerate}[leftmargin=*]
+  \item The sender captures a screenshot and starts a TCP server on a
+    random port.
+  \item A \texttt{SCREENSHOT\_READY} JSON message is broadcast via UDP,
+    containing the TCP port and file size.
+  \item When a receiver performs a \texttt{RELEASE} gesture, it connects
+    to the sender's TCP server, sends \texttt{"GET\textbackslash n"},
+    and receives a 4-byte big-endian length header followed by the raw
+    PNG data.
+\end{enumerate}
+
+\subsubsection{Retroactive Matching}
+
+To handle network latency, the protocol supports retroactive matching:
+if a \texttt{RELEASE} gesture occurs before the screenshot offer
+arrives, the release timestamp is recorded and matched against
+incoming offers within a 3-second window.
+
+\subsection{Cross-Platform Interoperability}
+
+Android and Desktop clients auto-discover each other on the same LAN
+and transfer screenshots transparently. The protocol is
+platform-agnostic: any device implementing the UDP/TCP wire format
+(Section~7 of the protocol specification) can join the GrabDrop
+network.

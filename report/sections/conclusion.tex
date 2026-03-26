@@ -1,0 +1,53 @@
+\section{Conclusion and Future Work}
+\label{sec:conclusion}
+
+We have presented GrabDrop, a cross-platform screenshot sharing system
+driven by real-time hand gesture recognition. The system demonstrates
+that a lightweight TCN model (87K~parameters), combined with
+MediaPipe hand landmark detection and a two-stage power-aware
+detection pipeline, can achieve practical gesture recognition accuracy
+(89.7\%) while remaining deployable on commodity mobile devices through
+structured pruning and INT8 quantization (final model size
+$\sim$140\,KB).
+
+The project makes several contributions relevant to the course themes
+of AI application in practice: (1)~applying cutting-edge temporal
+convolutional architectures to a real-world interaction problem;
+(2)~demonstrating the full model lifecycle from data collection through
+training, optimization, and edge deployment; and (3)~building a
+functional cross-platform system with a zero-configuration network
+protocol.
+
+\subsection{Limitations}
+
+\begin{itemize}[leftmargin=*]
+  \item \textbf{Small test set}: With only 29~test samples, the
+    reported accuracy has high variance. A larger, more diverse test
+    set would provide more reliable performance estimates.
+  \item \textbf{Pruning accuracy loss}: The 30\% structured pruning
+    reduced accuracy from 89.7\% to 82.8\%. Knowledge distillation
+    from the original model could potentially recover some of this gap.
+  \item \textbf{No encryption}: The current network protocol transmits
+    screenshots in plaintext. TLS/DTLS encryption should be added for
+    production use.
+  \item \textbf{Single-hand limitation}: The system detects only one
+    hand, precluding two-handed gesture vocabularies.
+\end{itemize}
+
+\subsection{Future Directions}
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Knowledge distillation}: Train the pruned model under
+    supervision of the original model to recover accuracy without
+    increasing model size.
+  \item \textbf{Expanded gesture vocabulary}: Add gestures such as
+    pinch-to-zoom, rotation, or multi-finger taps for richer
+    interaction.
+  \item \textbf{Federated learning}: Allow on-device personalization
+    of the gesture model without sharing raw data.
+  \item \textbf{End-to-end encryption}: Implement TLS for TCP
+    transfer and DTLS for UDP discovery to secure content in transit.
+  \item \textbf{Additional modalities}: Incorporate depth cameras or
+    IMU data for more robust gesture recognition in challenging
+    environments.
+\end{enumerate}

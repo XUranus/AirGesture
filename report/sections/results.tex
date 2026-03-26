@@ -1,0 +1,104 @@
+\section{Experimental Results}
+\label{sec:results}
+
+\subsection{Classification Performance}
+
+Table~\ref{tab:classification} presents the per-class precision, recall,
+and F1-score of the original (unpruned) GestureTCN on the test set.
+
+\begin{table}[ht]
+\centering
+\caption{Classification report on the test set (original model).}
+\label{tab:classification}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Class} & \textbf{Precision} & \textbf{Recall} & \textbf{F1} & \textbf{Support} \\
+\midrule
+\texttt{grab}        & 0.833 & 0.833 & 0.833 & 6 \\
+\texttt{release}     & 1.000 & 1.000 & 1.000 & 6 \\
+\texttt{swipe\_up}   & 0.750 & 0.600 & 0.667 & 5 \\
+\texttt{swipe\_down} & 0.833 & 1.000 & 0.909 & 5 \\
+\texttt{noise}       & 1.000 & 1.000 & 1.000 & 7 \\
+\midrule
+\textbf{Overall accuracy} & \multicolumn{3}{c}{89.66\%} & 29 \\
+\textbf{Macro F1} & \multicolumn{3}{c}{0.882} & \\
+\textbf{Weighted F1} & \multicolumn{3}{c}{0.892} & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The model achieves perfect performance on \texttt{release} and
+\texttt{noise}, while \texttt{swipe\_up} shows the lowest recall
+(0.600). The confusion matrix (Figure~\ref{fig:confusion}) reveals
+that one \texttt{swipe\_up} sample was misclassified as \texttt{grab}
+and another as \texttt{swipe\_down}, which is understandable given the
+spatial similarity between these gestures.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.6\linewidth]{confusion_matrix}
+  \caption{Confusion matrix on the test set. Rows denote true labels;
+    columns denote predicted labels.}
+  \label{fig:confusion}
+\end{figure}
+
+\subsection{Model Compression Trade-offs}
+
+Table~\ref{tab:compression} compares the original, pruned, and
+quantized models. Structured pruning achieves 1.9$\times$ parameter
+reduction with approximately 7~percentage points of accuracy loss
+(89.66\% $\to$ 82.76\%). INT8 quantization further reduces model size
+to $\sim$140\,KB with negligible additional accuracy degradation.
+
+\begin{table}[ht]
+\centering
+\caption{Impact of model optimization on size and accuracy.}
+\label{tab:compression}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Model} & \textbf{Params} & \textbf{Size} & \textbf{Accuracy} \\
+\midrule
+Original (FP32) & 87,077 & 0.34\,MB & 89.66\% \\
+Pruned (FP32) & 45,877 & 0.18\,MB & 82.76\% \\
+Pruned + Quantized (INT8) & 45,877 & $\sim$0.05\,MB & $\sim$82\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Real-Time Performance}
+
+Table~\ref{tab:latency} summarizes the end-to-end latency breakdown in
+the deployed system.
+
+\begin{table}[ht]
+\centering
+\caption{Latency breakdown in the deployed two-stage pipeline.}
+\label{tab:latency}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Phase} & \textbf{Latency} \\
+\midrule
+IDLE stage (hand detection) & $\sim$1.0\,s (10 frames at 10\,FPS) \\
+WAKEUP stage (gesture classification) & 0.5--1.5\,s \\
+Network transfer (UDP broadcast) & $\sim$10\,ms \\
+TCP download (screenshot) & 50--500\,ms \\
+\midrule
+\textbf{Total gesture-to-transfer} & 1.3--2.5\,s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The system maintains low CPU utilization during IDLE ($\sim$5--8\%
+single-core) and moderate utilization during WAKEUP
+($\sim$15--30\% for $\leq$2~seconds), making it suitable for
+continuous background operation on mobile devices.
+
+\subsection{Demo}
+
+GrabDrop has been tested across multiple device configurations:
+Android phones paired with Linux desktops, two Android devices, and
+two desktop machines. In all cases, device discovery, gesture
+recognition, and screenshot transfer functioned correctly across
+platforms. The source code and demo video are available in the
+accompanying repository.\footnote{Repository link included in the
+  project submission.}

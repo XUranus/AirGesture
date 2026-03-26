@@ -1,0 +1,49 @@
+\section{Related Work}
+\label{sec:related_work}
+
+\subsection{Hand Gesture Recognition}
+
+Hand gesture recognition has been extensively studied using both
+vision-based and sensor-based approaches. Early methods relied on colored
+gloves or depth sensors~\cite{rautaray2015vision}, while modern
+approaches leverage deep learning on RGB camera input.
+MediaPipe~\cite{zhang2020mediapipe} provides a lightweight hand
+landmark detection model that extracts 21 3D keypoints in real-time,
+forming the basis for many downstream gesture classification systems.
+
+For temporal gesture classification, Recurrent Neural Networks (RNNs)
+and Long Short-Term Memory (LSTM) networks have been widely
+used~\cite{pigou2018gesture}. However, Temporal Convolutional Networks
+(TCNs)~\cite{bai2018empirical, lea2017temporal} have emerged as a
+competitive alternative, offering parallelizable training, stable
+gradient flow via residual connections, and flexible receptive fields
+through dilated causal convolutions. Lea et al.~\cite{lea2017temporal}
+demonstrated that TCNs outperform LSTMs on action segmentation tasks
+while being significantly faster to train.
+
+\subsection{Model Compression for Edge Deployment}
+
+Deploying deep learning models on resource-constrained devices (e.g.,
+smartphones, embedded systems) requires model compression techniques.
+Structured pruning~\cite{li2017pruning} removes entire convolutional
+filters, producing genuinely smaller models without requiring sparse
+hardware support. Network quantization~\cite{jacob2018quantization}
+reduces numerical precision from 32-bit floating point to 8-bit
+integers, achieving approximately $4\times$ memory reduction. The ONNX
+Runtime~\cite{onnxruntime} provides a portable inference engine that
+supports both pruned and quantized models across diverse hardware
+platforms.
+
+\subsection{Contactless Device Interaction}
+
+Gesture-based device interaction has been explored in various contexts.
+Gesture control for smart TVs~\cite{samsung2013gesture}, automotive
+interfaces~\cite{ohn2014hand}, and augmented reality
+headsets~\cite{meta2023hand} demonstrates the practical applicability
+of hand gesture recognition. However, using gestures specifically for
+\emph{cross-device content transfer} remains relatively unexplored.
+Existing wireless sharing solutions such as Apple AirDrop, Google Nearby
+Share, and Huawei Share rely on explicit user actions (button taps,
+device selection) rather than natural gestures. GrabDrop fills this gap
+by combining real-time gesture recognition with a zero-configuration
+network protocol.
