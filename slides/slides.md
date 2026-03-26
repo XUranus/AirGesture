@@ -87,10 +87,12 @@ Our goal is to remove these restrictions. We want to make this work on any Andro
 -->
 
 ---
+<video controls width="400" height="600">
+  <source src="./assets/demo.mp4" type="video/mp4">
+</video>
 
-# Demo
+<div class="bottom-right"><img src="./assets/grab-release.png" ></div>
 
-> TODO:: video insert here
 
 <!--Speaker Notes:
 Here is a demo video, we test the screenshot transfer between xiaomi phone and laptop
