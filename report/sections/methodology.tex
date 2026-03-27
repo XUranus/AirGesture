@@ -5,17 +5,7 @@
 
 GrabDrop employs a two-stage gesture detection pipeline shared across
 both the Neural Network (TCN) and Legacy (rule-based) backends
-(Figure~\ref{fig:two-stage}):
-
-\begin{enumerate}[leftmargin=*]
-  \item \textbf{IDLE stage} ($\sim$10\,FPS): Low-power scanning for
-    hand presence. A sliding window of 10~frames tracks hand detection
-    counts; when $\geq 8$ frames contain a detected hand, the system
-    transitions to the WAKEUP stage.
-  \item \textbf{WAKEUP stage} ($\sim$30\,FPS): High-precision gesture
-    classification. Runs for at most 2~seconds before timing out and
-    returning to IDLE.
-\end{enumerate}
+(Figure~\ref{fig:two-stage}). The first stage, designated IDLE, operates at approximately 10 frames per second and performs low-power scanning for hand presence. A sliding window of 10 frames tracks hand detection counts, and when at least 8 frames within this window contain a detected hand, the system transitions to the second stage. This second stage, designated WAKEUP, operates at approximately 30 frames per second and performs high-precision gesture classification, running for at most 2 seconds before timing out and returning to the IDLE stage.
 
 \begin{figure}[ht]
   \centering
@@ -64,28 +54,21 @@ convolution serves as the skip projection.
 
 \subsubsection{Model Architecture}
 
-The full GestureTCN architecture comprises:
-
-\begin{enumerate}[leftmargin=*]
-  \item \textbf{Stem}: $1\!\times\!1$ convolution projecting 144 input
-    features to 48 channels, followed by batch normalization and ReLU.
-  \item \textbf{Block~1}: Residual block, $k\!=\!3$, dilation $d\!=\!1$
-    (48 channels, local patterns).
-  \item \textbf{Block~2}: Residual block, $k\!=\!3$, $d\!=\!2$
-    (48 channels, medium-range patterns).
-  \item \textbf{Block~3}: Channel block, $k\!=\!3$, $d\!=\!4$
-    (48$\to$64 channels, long-range patterns).
-  \item \textbf{Block~4}: Residual block, $k\!=\!3$, $d\!=\!1$
-    (64 channels, refinement).
-  \item \textbf{Pooling}: Adaptive average pooling across the time
-    dimension, producing a single 64-dim vector.
-  \item \textbf{Classification head}: Two fully connected layers
-    ($64 \to 32 \to 5$) with ReLU and dropout.
-\end{enumerate}
+The full GestureTCN architecture comprises a sequential stack of processing components. The stem layer consists of a $1\!\times\!1$ convolution that projects the 144 input features to 48 channels, followed by batch normalization and ReLU activation. Block~1 is a residual block with kernel size 3 and dilation factor 1, operating on 48 channels to capture local temporal patterns. Block~2 extends this with a dilation factor of 2 while maintaining 48 channels, enabling the capture of medium-range temporal dependencies. Block~3 serves as a channel expansion block with kernel size 3 and dilation factor 4, increasing the channel dimension from 48 to 64 while modeling long-range temporal patterns. Block~4 provides additional refinement through a residual block with kernel size 3 and dilation factor 1 on 64 channels. The architecture then applies adaptive average pooling across the time dimension to produce a single 64-dimensional vector, which is subsequently processed by a classification head consisting of two fully connected layers ($64 \to 32 \to 5$) with ReLU activation and dropout regularization.
 
 The model contains only \textbf{87,077 parameters} (0.34\,MB),
 making it suitable for mobile and embedded deployment. Weights are
 initialized using Kaiming normal initialization~\cite{he2015delving}.
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.95\linewidth]{TCN-Architecture}
+  \caption{GestureTCN architecture: a stem layer projects 144-dimensional
+    features to 48 channels, followed by four residual blocks with dilations
+    of $\{1, 2, 4, 1\}$, adaptive average pooling, and a two-layer
+    classification head.}
+  \label{fig:tcn-architecture}
+\end{figure}
 
 \subsection{Legacy Backend: Rule-Based Detection}
 

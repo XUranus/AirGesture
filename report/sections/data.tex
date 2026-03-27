@@ -69,26 +69,7 @@ Finger curl angles & 5 & Bending angle (via $\arccos$) for each of the 5~fingers
 \subsection{Data Augmentation}
 
 To expand our limited video dataset, we apply seven augmentation
-techniques during preprocessing:
-
-\begin{enumerate}[leftmargin=*]
-  \item \textbf{Time crops:} Extract sub-sequences at different
-    start/end positions (up to 9 crops per video).
-  \item \textbf{Jitter:} Add small Gaussian noise
-    ($\sigma = 0.003$) to landmark coordinates (3~variants).
-  \item \textbf{Rotation:} Rotate landmarks around the wrist by
-    $\{-15, -10, -5, +5, +10, +15\}$~degrees (6~variants).
-  \item \textbf{Scale:} Scale hand size by factors
-    $\{0.85, 0.9, 1.1, 1.15\}$ relative to the wrist (4~variants).
-  \item \textbf{Time warp:} Non-linearly stretch/compress along the
-    time axis (2~variants).
-  \item \textbf{Speed change:} Uniformly speed up or slow down the
-    gesture by a random factor in $[0.8, 1.2]$ (2~variants).
-  \item \textbf{Time reversal with label remapping:} Reversing a
-    \texttt{grab} produces a valid \texttt{release} and vice versa;
-    reversing \texttt{swipe\_up} yields \texttt{swipe\_down}
-    (1~variant with corrected label).
-\end{enumerate}
+techniques during preprocessing. Time crops extract sub-sequences at different start and end positions, yielding up to 9 crops per video. Jitter augmentation adds small Gaussian noise with standard deviation $\sigma = 0.003$ to landmark coordinates, generating 3 variants per sample. Rotation augmentation rotates landmarks around the wrist by angles in the set $\{-15, -10, -5, +5, +10, +15\}$ degrees, producing 6 variants. Scale augmentation adjusts hand size by factors of $\{0.85, 0.9, 1.1, 1.15\}$ relative to the wrist, creating 4 variants. Time warp augmentation non-linearly stretches or compresses the sequence along the time axis, generating 2 variants. Speed change augmentation uniformly accelerates or decelerates the gesture by a random factor in the range $[0.8, 1.2]$, yielding 2 variants. Finally, time reversal with label remapping exploits the semantic symmetry of certain gestures: reversing a \texttt{grab} produces a valid \texttt{release} and vice versa, while reversing \texttt{swipe\_up} yields \texttt{swipe\_down}, providing 1 variant with appropriately corrected labels.
 
 This pipeline yields approximately 20--30 augmented samples per
 original video. Additionally, online augmentation (50\% jitter,

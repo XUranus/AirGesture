@@ -54,11 +54,7 @@ within each epoch, further mitigating class imbalance.
 
 Beyond the offline augmentation described in
 Section~\ref{sec:data}, the PyTorch \texttt{Dataset} applies
-stochastic augmentation at each access:
-\begin{itemize}[leftmargin=*]
-  \item Coordinate jitter ($\sigma = 0.002$) with 50\% probability.
-  \item Time warping with 30\% probability.
-\end{itemize}
+stochastic augmentation at each access: coordinate jitter with standard deviation $\sigma = 0.002$ is applied with 50\% probability, and time warping is applied with 30\% probability.
 This means the model sees slightly different variants of each sample
 every epoch, further improving generalization.
 

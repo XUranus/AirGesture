@@ -43,35 +43,14 @@ accuracy of 82.76\%.
 
 We export the pruned model to ONNX (Open Neural Network
 Exchange)~\cite{onnxruntime} format using PyTorch's tracing-based
-exporter. The export specifies:
-\begin{itemize}[leftmargin=*]
-  \item \textbf{Dynamic batch axis}: Allows variable batch sizes at
-    inference time.
-  \item \textbf{Opset version 18}: Ensures compatibility with modern
-    ONNX Runtime versions.
-  \item \textbf{Named I/O}: Input tensor named \texttt{``input''}
-    (shape $[B, 144, 30]$), output tensor named \texttt{``logits''}
-    (shape $[B, 5]$).
-\end{itemize}
+exporter. The export specification includes a dynamic batch axis to accommodate variable batch sizes at inference time, opset version 18 to ensure compatibility with modern ONNX Runtime versions, and named input and output tensors where the input tensor is designated as \texttt{``input''} with shape $[B, 144, 30]$ and the output tensor is designated as \texttt{``logits''} with shape $[B, 5]$.
 Model validity is verified using \texttt{onnx.checker.check\_model()}.
 
 \subsection{INT8 Static Quantization}
 
 We apply static quantization via ONNX
 Runtime~\cite{jacob2018quantization}, converting FP32 weights to
-signed 8-bit integers. The process consists of:
-
-\begin{enumerate}[leftmargin=*]
-  \item \textbf{Calibration}: Real training data is fed through the
-    FP32 ONNX model to observe the range of activation values at each
-    layer.
-  \item \textbf{Scale computation}: Per-tensor scale and zero-point
-    values are computed to map FP32 ranges to INT8:
-    $x_{\text{int8}} = \text{round}(x_{\text{fp32}} / s) + z$.
-  \item \textbf{QDQ insertion}: Quantize-Dequantize (QDQ) nodes are
-    inserted into the computation graph, enabling the runtime to fuse
-    quantized operations for optimal performance.
-\end{enumerate}
+signed 8-bit integers through a three-phase process. In the calibration phase, real training data is fed through the FP32 ONNX model to observe the range of activation values at each layer. Subsequently, in the scale computation phase, per-tensor scale and zero-point values are computed to map FP32 ranges to INT8 according to the formula $x_{\text{int8}} = \text{round}(x_{\text{fp32}} / s) + z$. Finally, in the QDQ insertion phase, Quantize-Dequantize (QDQ) nodes are inserted into the computation graph, enabling the runtime to fuse quantized operations for optimal performance.
 
 The final quantized model is approximately 140\,KB---small enough
 to be bundled directly in a mobile application package.

@@ -31,33 +31,7 @@ moving up or down) enable remote page scrolling.
 
 \subsection{Contributions}
 
-The main contributions of this project are as follows:
-
-\begin{enumerate}[leftmargin=*]
-  \item \textbf{End-to-end gesture recognition pipeline.} We design a
-    complete pipeline from raw video capture through hand landmark
-    extraction (MediaPipe), feature engineering (144~dimensions),
-    temporal classification (TCN), and gesture event emission, operating
-    in real-time with a two-stage (Idle/Wakeup) power-aware detection
-    scheme.
-
-  \item \textbf{Model optimization for edge deployment.} We apply
-    structured pruning (30\% channel reduction, yielding
-    1.9$\times$~compression from 87K to 46K parameters) followed by
-    INT8 static quantization, producing a deployment-ready ONNX model
-    of approximately 140\,KB with minimal accuracy degradation.
-
-  \item \textbf{Cross-platform application.} We implement native clients
-    for Android (Kotlin/Jetpack~Compose) and Desktop (Python), sharing a
-    unified UDP/TCP network protocol for device discovery and screenshot
-    transfer. Both platforms support dual detection backends (Neural
-    Network and Legacy rule-based) with automatic fallback.
-
-  \item \textbf{Comprehensive data augmentation.} We employ seven
-    augmentation techniques including temporal reversal with label
-    remapping, expanding a small video dataset into thousands of
-    training samples.
-\end{enumerate}
+This project makes four primary contributions to the domain of gesture-based human--computer interaction. First, we design an end-to-end gesture recognition pipeline that spans from raw video capture through hand landmark extraction via MediaPipe, feature engineering into 144-dimensional vectors, temporal classification using a Temporal Convolutional Network, and gesture event emission, all operating in real-time under a two-stage (Idle/Wakeup) power-aware detection scheme. Second, we apply model optimization techniques for edge deployment, specifically structured pruning with a 30\% channel reduction yielding a 1.9$\times$ compression from 87K to 46K parameters, followed by INT8 static quantization to produce a deployment-ready ONNX model of approximately 140\,KB with minimal accuracy degradation. Third, we implement native clients for Android (Kotlin/Jetpack Compose) and Desktop (Python) that share a unified UDP/TCP network protocol for device discovery and screenshot transfer, with both platforms supporting dual detection backends (Neural Network and Legacy rule-based) with automatic fallback capabilities. Finally, we employ seven augmentation techniques including temporal reversal with label remapping, effectively expanding a small video dataset into thousands of training samples to improve model generalization.
 
 The remainder of this report is organized as follows:
 Section~\ref{sec:related_work} reviews related work;
