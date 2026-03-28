@@ -86,6 +86,12 @@ class ScreenCaptureManager(private val context: Context) {
 
         // Continuously listen for new frames
         reader.setOnImageAvailableListener({ ir ->
+            // Skip if teardown in progress or not fully set up
+            if (!isSetUp.get()) {
+                ir.acquireLatestImage()?.close()
+                return@setOnImageAvailableListener
+            }
+            
             val image = ir.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
                 val bmp = imageToBitmap(image, screenWidth, screenHeight)
@@ -122,11 +128,17 @@ class ScreenCaptureManager(private val context: Context) {
     private fun tearDown() {
         isSetUp.set(false)
 
-        imageReader?.setOnImageAvailableListener(null, null)
+        // Clear listener FIRST to prevent new callbacks
+        val reader = imageReader
+        reader?.setOnImageAvailableListener(null, null)
+        
+        // Close reader before releasing virtual display to ensure
+        // any pending images are properly handled
+        reader?.close()
+        imageReader = null
+        
         virtualDisplay?.release()
         virtualDisplay = null
-        imageReader?.close()
-        imageReader = null
 
         latestBitmap.getAndSet(null)?.recycle()
     }
@@ -188,13 +200,22 @@ class ScreenCaptureManager(private val context: Context) {
         if (planes.isEmpty()) return null
 
         val buffer = planes[0].buffer
+        if (!buffer.hasRemaining()) return null
+        
         val pixelStride = planes[0].pixelStride
         val rowStride = planes[0].rowStride
         val rowPadding = rowStride - pixelStride * targetWidth
 
         val bmpWidth = targetWidth + rowPadding / pixelStride
         val bmp = Bitmap.createBitmap(bmpWidth, targetHeight, Bitmap.Config.ARGB_8888)
-        bmp.copyPixelsFromBuffer(buffer)
+        
+        try {
+            bmp.copyPixelsFromBuffer(buffer)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to copy pixels from buffer", e)
+            bmp.recycle()
+            return null
+        }
 
         return if (bmpWidth != targetWidth) {
             Bitmap.createBitmap(bmp, 0, 0, targetWidth, targetHeight).also {
