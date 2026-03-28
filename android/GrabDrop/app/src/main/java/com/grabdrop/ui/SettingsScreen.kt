@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -289,6 +290,18 @@ fun SettingsScreen(
                     min = 500, max = 30_000,
                     resetTrigger = resetTrigger
                 )
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // ── Sound ──
+            SettingsSection(
+                title = "Sound",
+                icon = Icons.AutoMirrored.Filled.VolumeUp,
+                color = Color(0xFFFF5722),
+                key = resetTrigger
+            ) {
+                SoundEnabledSetting(resetTrigger = resetTrigger)
             }
 
             Spacer(Modifier.height(24.dp))
@@ -729,6 +742,57 @@ private fun SettingRow(
         HorizontalDivider(
             color = TextSecondary.copy(alpha = 0.15f),
             thickness = 0.5.dp
+        )
+    }
+}
+
+// ── Sound Setting ───────────────────────────────────────────────
+
+@Composable
+private fun SoundEnabledSetting(resetTrigger: Int) {
+    var soundEnabled by remember(resetTrigger) {
+        mutableStateOf(
+            AppSettings.p().getBoolean(
+                AppSettings.KEY_SOUND_ENABLED,
+                AppSettings.DEF_SOUND_ENABLED
+            )
+        )
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(
+                "Enable Sound Effects",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = TextPrimary
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "Play shutter click and receive tone sounds",
+                style = MaterialTheme.typography.bodySmall,
+                color = TextSecondary,
+                lineHeight = 16.sp
+            )
+        }
+        Switch(
+            checked = soundEnabled,
+            onCheckedChange = { enabled ->
+                soundEnabled = enabled
+                AppSettings.setBoolean(AppSettings.KEY_SOUND_ENABLED, enabled)
+            },
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Blue400,
+                checkedTrackColor = Blue400.copy(alpha = 0.5f),
+                uncheckedThumbColor = TextSecondary,
+                uncheckedTrackColor = TextSecondary.copy(alpha = 0.3f)
+            )
         )
     }
 }

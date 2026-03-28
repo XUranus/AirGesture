@@ -16,6 +16,7 @@ class SoundPlayer(private val context: Context) {
     }
 
     fun playShutter() {
+        if (!AppSettings.soundEnabled) return
         try {
             mediaActionSound.play(MediaActionSound.SHUTTER_CLICK)
         } catch (e: Exception) {
@@ -24,6 +25,7 @@ class SoundPlayer(private val context: Context) {
     }
 
     fun playReceive() {
+        if (!AppSettings.soundEnabled) return
         try {
             val toneGen = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 80)
             toneGen.startTone(ToneGenerator.TONE_PROP_ACK, 200)

@@ -43,6 +43,9 @@ object AppSettings {
     const val KEY_SCREENSHOT_OFFER_TIMEOUT  = "screenshot_offer_timeout_ms"
     const val KEY_GRAB_COOLDOWN_MS          = "grab_cooldown_ms"
 
+    // Sound
+    const val KEY_SOUND_ENABLED             = "sound_enabled"
+
     // ── Defaults (mirror original Constants values) ──────────────
     const val DEF_USE_NEURAL_NETWORK        = true
     const val DEF_IDLE_FPS                  = 10
@@ -63,6 +66,7 @@ object AppSettings {
     const val DEF_MULTICAST_GROUP           = "239.255.77.88"
     const val DEF_SCREENSHOT_OFFER_TIMEOUT  = 10_000L
     const val DEF_GRAB_COOLDOWN_MS          = 3_000L
+    const val DEF_SOUND_ENABLED             = true
 
     private var prefs: SharedPreferences? = null
 
@@ -126,6 +130,10 @@ object AppSettings {
         get() = p().getLong(KEY_SCREENSHOT_OFFER_TIMEOUT, DEF_SCREENSHOT_OFFER_TIMEOUT)
     val grabCooldownMs: Long
         get() = p().getLong(KEY_GRAB_COOLDOWN_MS, DEF_GRAB_COOLDOWN_MS)
+
+    // Sound
+    val soundEnabled: Boolean
+        get() = p().getBoolean(KEY_SOUND_ENABLED, DEF_SOUND_ENABLED)
 
     // ── Setters (individual) ─────────────────────────────────────
 
