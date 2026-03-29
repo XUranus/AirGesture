@@ -35,7 +35,7 @@ sequenceDiagram
 ```
 
 ## Demo Video
-![](./slides/assets/demo.mp4)
+<video src="slides/assets/demo.mp4"/>
 
 ## Gesture Detection
 
