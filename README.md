@@ -1,6 +1,8 @@
 # GrabDrop
 
-> Share screenshots between devices using hand gestures over LAN -- no cloud, no accounts, no pairing.
+> Share screenshots between devices using hand gestures over LAN -- no cloud, no accounts, no pairing. 
+
+ - DSAI5201 Project (PolyU 26 Spring Semester 2)
 
 ## What It Does
 
@@ -8,24 +10,32 @@ GrabDrop lets you **grab** a screenshot by closing your hand (palm -> fist) and 
 
 ![](slides/assets/grab-release.png)
 
-```
-Device A (Sender)                    Device B (Receiver)
------------------                    ------------------
 
-1. Show hand to camera               
-   -> hand detected                  
-                                     
-2. Close fist (GRAB)                 
-   -> screenshot captured            
-   -> UDP broadcast sent ----------> 3. Offer received & queued
-                                     
-                                     4. Show hand to camera
-                                        -> hand detected
-                                     
-                                     5. Open hand (RELEASE)
-                                        -> TCP download
-                                        -> image saved & opened
+```mermaid
+sequenceDiagram
+    participant A as Device A (Sender)
+    participant B as Device B (Receiver)
+
+    Note over A: 1. Show hand to camera
+    A->>A: hand detected
+
+    Note over A: 2. Close fist (GRAB)
+    A->>A: screenshot captured
+    A->>B: UDP broadcast
+
+    Note over B: 3. Offer received/queued
+
+    Note over B: 4. Show hand to camera
+    B->>B: hand detected
+
+    Note over B: 5. Open hand (RELEASE)
+    B->>A: TCP download request
+    A->>B: image data
+    B->>B: image saved and opened
 ```
+
+## Demo Video
+![](./slides/assets/demo.mp4)
 
 ## Gesture Detection
 
@@ -126,6 +136,6 @@ See [docs/network.md](docs/network.md) for the full protocol specification.
 - [Network Protocol](docs/network.md) -- UDP discovery, TCP transfer, wire format, implementation guide
 - [Android README](android/README.md) -- Build, permissions, settings, architecture
 - [Desktop README](desktop/README.md) -- Quick start, config reference, troubleshooting
-- [MODEL_GUIDE.md](MODEL_GUIDE.md) -- Complete model training, optimization, and deployment guide
+- [Model README.md](models/README.md) -- Complete model training, optimization, and deployment guide
 
 ---
