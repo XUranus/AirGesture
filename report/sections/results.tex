@@ -14,40 +14,31 @@ and F1-score of the original (unpruned) GestureTCN on the test set.
 \toprule
 \textbf{Class} & \textbf{Precision} & \textbf{Recall} & \textbf{F1} & \textbf{Support} \\
 \midrule
-\texttt{grab}        & 0.833 & 0.833 & 0.833 & 6 \\
+\texttt{grab}        & 1.000 & 0.833 & 0.909 & 6 \\
 \texttt{release}     & 1.000 & 1.000 & 1.000 & 6 \\
-\texttt{swipe\_up}   & 0.750 & 0.600 & 0.667 & 5 \\
-\texttt{swipe\_down} & 0.833 & 1.000 & 0.909 & 5 \\
+\texttt{swipe\_up}   & 0.833 & 1.000 & 0.909 & 5 \\
+\texttt{swipe\_down} & 1.000 & 1.000 & 1.000 & 5 \\
 \texttt{noise}       & 1.000 & 1.000 & 1.000 & 7 \\
 \midrule
-\textbf{Overall accuracy} & \multicolumn{3}{c}{89.66\%} & 29 \\
-\textbf{Macro F1} & \multicolumn{3}{c}{0.882} & \\
-\textbf{Weighted F1} & \multicolumn{3}{c}{0.892} & \\
+\textbf{Overall accuracy} & \multicolumn{3}{c}{96.55\%} & 29 \\
+\textbf{Macro F1} & \multicolumn{3}{c}{0.964} & \\
+\textbf{Weighted F1} & \multicolumn{3}{c}{0.966} & \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The model achieves perfect performance on \texttt{release} and
-\texttt{noise}, while \texttt{swipe\_up} shows the lowest recall
-(0.600). The confusion matrix (Figure~\ref{fig:confusion}) reveals
-that one \texttt{swipe\_up} sample was misclassified as \texttt{grab}
-and another as \texttt{swipe\_down}, which is understandable given the
-spatial similarity between these gestures.
-
-\begin{figure}[ht]
-  \centering
-  \includegraphics[width=0.6\linewidth]{confusion_matrix}
-  \caption{Confusion matrix on the test set. Rows denote true labels;
-    columns denote predicted labels.}
-  \label{fig:confusion}
-\end{figure}
+The model achieves perfect performance on \texttt{release},
+\texttt{swipe\_down}, and \texttt{noise}, while \texttt{grab} shows
+slightly lower recall (0.833), with one sample misclassified as
+\texttt{swipe\_up}, which is understandable given the spatial similarity
+between these gestures.
 
 \subsection{Model Compression Trade-offs}
 
 Table~\ref{tab:compression} compares the original, pruned, and
 quantized models. Structured pruning achieves 1.9$\times$ parameter
 reduction with approximately 7~percentage points of accuracy loss
-(89.66\% $\to$ 82.76\%). INT8 quantization further reduces model size
+(96.55\% $\to$ 89.66\%). INT8 quantization further reduces model size
 to $\sim$140\,KB with negligible additional accuracy degradation.
 
 \begin{table}[ht]
@@ -58,9 +49,9 @@ to $\sim$140\,KB with negligible additional accuracy degradation.
 \toprule
 \textbf{Model} & \textbf{Params} & \textbf{Size} & \textbf{Accuracy} \\
 \midrule
-Original (FP32) & 87,077 & 0.34\,MB & 89.66\% \\
-Pruned (FP32) & 45,877 & 0.18\,MB & 82.76\% \\
-Pruned + Quantized (INT8) & 45,877 & $\sim$0.05\,MB & $\sim$82\% \\
+Original (FP32) & 87,077 & 0.34\,MB & 96.55\% \\
+Pruned (FP32) & 45,877 & 0.18\,MB & 89.66\% \\
+Pruned + Quantized (INT8) & 45,877 & $\sim$0.14\,MB & 89.66\% \\
 \bottomrule
 \end{tabular}
 \end{table}

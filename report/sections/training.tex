@@ -60,8 +60,8 @@ every epoch, further improving generalization.
 
 \subsection{Training Dynamics}
 
-Training terminated after 68~epochs via early stopping, with the best
-test accuracy of 89.66\% achieved at epoch~28.
+Training terminated after 92~epochs via early stopping, with the best
+test accuracy of 96.55\% achieved at epoch~52.
 Figure~\ref{fig:training_curves} shows the training and test loss/accuracy curves. The cosine annealing schedule
 smoothly reduces the learning rate from $2\!\times\!10^{-3}$ to
 $10^{-5}$, enabling fine-grained convergence in later epochs.
@@ -70,7 +70,7 @@ $10^{-5}$, enabling fine-grained convergence in later epochs.
   \centering
   \includegraphics[width=0.95\linewidth]{training_curves}
   \caption{Training curves: loss (left) and accuracy (right) over
-    68~epochs. Early stopping was triggered at epoch~68 with the best
-    model saved at epoch~28.}
+    92~epochs. Early stopping was triggered at epoch~92 with the best
+    model saved at epoch~52.}
   \label{fig:training_curves}
 \end{figure}

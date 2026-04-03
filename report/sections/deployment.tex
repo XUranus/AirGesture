@@ -35,9 +35,9 @@ Compression ratio & 1.0$\times$ & 1.9$\times$ \\
 \end{table}
 
 The pruned model is a new instance of \texttt{GestureTCN} with reduced
-channel dimensions. It is trained from scratch for 100~epochs using the
+channel dimensions. It is fine-tuned for 100~epochs using the
 same dataset and a lower learning rate ($10^{-3}$), achieving a test
-accuracy of 82.76\%.
+accuracy of 89.66\%.
 
 \subsection{ONNX Export}
 
@@ -78,10 +78,9 @@ pipeline.
 \toprule
 \textbf{Stage} & \textbf{Params} & \textbf{Size} & \textbf{Accuracy} & \textbf{Format} \\
 \midrule
-Original (FP32) & 87,077 & 0.34\,MB & 89.66\% & PyTorch \\
-Pruned (FP32) & 45,877 & 0.18\,MB & 82.76\% & PyTorch \\
-Pruned ONNX (FP32) & 45,877 & $\sim$0.18\,MB & 82.76\% & ONNX \\
-Pruned + Quantized (INT8) & 45,877 & $\sim$0.05\,MB & $\sim$82\% & ONNX \\
+Original (FP32) & 87,077 & 0.34\,MB & 96.55\% & PyTorch \\
+Pruned (FP32) & 45,877 & 0.18\,MB & 89.66\% & PyTorch \\
+Pruned + Quantized (INT8) & 45,877 & $\sim$0.14\,MB & 89.66\% & ONNX \\
 \bottomrule
 \end{tabular}
 \end{table}
