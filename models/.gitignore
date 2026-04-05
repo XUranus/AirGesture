@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Data and cache
+data/
+cache/
+*.npz
+*.npy
+
+# Model checkpoints
+checkpoints/
+*.pth
+*.pt
+
+# ONNX models
+*.onnx
+*.onnx.data
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MediaPipe task file
+*.task

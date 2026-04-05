@@ -456,7 +456,7 @@ Training stops if test accuracy hasn't improved for 40 consecutive epochs. This 
 - **Overfitting**: The model memorizes training data instead of learning generalizable patterns
 - **Wasted computation**: No point continuing if the model isn't improving
 
-In practice, the model trained for 68 epochs before early stopping triggered, with the best accuracy achieved at epoch 28.
+In practice, the model trained for 49 epochs before early stopping triggered, with the best accuracy achieved at epoch 9.
 
 ### 5.6 Evaluation Function
 
@@ -505,11 +505,11 @@ After training, the best model is loaded and evaluated:
 
 ```
               precision    recall  f1-score   support
-        grab     0.8333    0.8333    0.8333         6
+        grab     1.0000    0.6667    0.8000         6
      release     1.0000    1.0000    1.0000         6
-    swipe_up     0.7500    0.6000    0.6667         5
-  swipe_down     0.8333    1.0000    0.9091         5
-       noise     1.0000    1.0000    1.0000         7
+    swipe_up     0.7143    1.0000    0.8333         5
+  swipe_down     1.0000    1.0000    1.0000         5
+       noise     0.8571    0.8571    0.8571         7
 ```
 
 **Understanding the metrics:**
@@ -524,14 +524,14 @@ Shows which classes get confused with each other:
 
 ```
             grab  release  swipe_up  swipe_down  noise
-    grab       5        0         1           0      0
+    grab       4        0         1           0      1
  release       0        6         0           0      0
-swipe_up       1        0         3           1      0
+swipe_up       0        0         5           0      0
 swipe_down     0        0         0           5      0
-   noise       0        0         0           0      7
+   noise       0        0         1           0      6
 ```
 
-Reading this: Row = true class, Column = predicted class. The diagonal shows correct predictions. Off-diagonal entries are errors. For example, 1 swipe_up sample was predicted as grab, and 1 swipe_up was predicted as swipe_down.
+Reading this: Row = true class, Column = predicted class. The diagonal shows correct predictions. Off-diagonal entries are errors. For example, 1 grab sample was predicted as swipe_up, and 1 grab was predicted as noise.
 
 ---
 
@@ -550,10 +550,10 @@ history = {
     "train_accs": [...],
     "test_accs": [...],
     "learning_rates": [...],
-    "best_epoch": 28,
+    "best_epoch": 9,
     "best_acc": 0.8966,
-    "f1_macro": 0.8818,
-    "f1_weighted": 0.8924,
+    "f1_macro": 0.8981,
+    "f1_weighted": 0.8954,
 }
 json.dump(history, "checkpoints/training_history.json")
 ```
