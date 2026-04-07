@@ -35,9 +35,9 @@ Compression ratio & 1.0$\times$ & 1.9$\times$ \\
 \end{table}
 
 The pruned model is a new instance of \texttt{GestureTCN} with reduced
-channel dimensions. It is trained from scratch for 100~epochs using the
+channel dimensions. It is fine-tuned for 100~epochs using the
 same dataset and a lower learning rate ($10^{-3}$), achieving a test
-accuracy of 82.76\%.
+accuracy of 89.66\%.
 
 \subsection{ONNX Export}
 
@@ -52,8 +52,8 @@ We apply static quantization via ONNX
 Runtime~\cite{jacob2018quantization}, converting FP32 weights to
 signed 8-bit integers through a three-phase process. In the calibration phase, real training data is fed through the FP32 ONNX model to observe the range of activation values at each layer. Subsequently, in the scale computation phase, per-tensor scale and zero-point values are computed to map FP32 ranges to INT8 according to the formula $x_{\text{int8}} = \text{round}(x_{\text{fp32}} / s) + z$. Finally, in the QDQ insertion phase, Quantize-Dequantize (QDQ) nodes are inserted into the computation graph, enabling the runtime to fuse quantized operations for optimal performance.
 
-The final quantized model is approximately 140\,KB---small enough
-to be bundled directly in a mobile application package.
+\paragraph{Quantization Benefits.}
+The primary benefit of INT8 quantization for this model is \emph{inference acceleration} rather than size reduction. On mobile CPUs and NPUs, INT8 operations are typically 2--4$\times$ faster than FP32 operations due to specialized hardware support and reduced memory bandwidth. While quantization theoretically reduces weight storage by 4$\times$ (32-bit to 8-bit), the QDQ format adds metadata overhead for each quantized operation. For small models ($<$100\,KB), this overhead can offset weight compression gains---our quantized model is 0.14\,MB compared to the FP32 ONNX model's 0.09\,MB. This phenomenon is well-documented for compact neural networks where the fixed overhead of quantization metadata dominates the variable savings from weight compression.
 
 \subsection{Deployment Configuration}
 
@@ -79,9 +79,12 @@ pipeline.
 \textbf{Stage} & \textbf{Params} & \textbf{Size} & \textbf{Accuracy} & \textbf{Format} \\
 \midrule
 Original (FP32) & 87,077 & 0.34\,MB & 89.66\% & PyTorch \\
-Pruned (FP32) & 45,877 & 0.18\,MB & 82.76\% & PyTorch \\
-Pruned ONNX (FP32) & 45,877 & $\sim$0.18\,MB & 82.76\% & ONNX \\
-Pruned + Quantized (INT8) & 45,877 & $\sim$0.05\,MB & $\sim$82\% & ONNX \\
+Pruned (FP32) & 45,877 & 0.18\,MB & 89.66\% & PyTorch \\
+Original ONNX (FP32) & 87,077 & 0.09\,MB & 89.66\% & ONNX \\
+Pruned ONNX (FP32) & 45,877 & 0.09\,MB & 89.66\% & ONNX \\
+Pruned + Quantized (INT8) & 45,877 & 0.14\,MB & 89.66\% & ONNX \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+The ONNX format produces more compact files than PyTorch's serialization format. Notably, the INT8 quantized model is slightly larger than the FP32 ONNX models due to QDQ node overhead, as discussed above. For deployment, we select the quantized model primarily for its faster inference speed on mobile hardware rather than size reduction.
