@@ -4,37 +4,37 @@
 \subsection{Classification Performance}
 
 Table~\ref{tab:classification} presents the per-class precision, recall,
-and F1-score of the original (unpruned) GestureTCN on the test set.
+and F1-score of the deployed model (pruned and quantized) on the test set.
 
 \begin{table}[ht]
 \centering
-\caption{Classification report on the test set (original model).}
+\caption{Classification report on the test set (deployed model).}
 \label{tab:classification}
 \begin{tabular}{@{}lcccc@{}}
 \toprule
 \textbf{Class} & \textbf{Precision} & \textbf{Recall} & \textbf{F1} & \textbf{Support} \\
 \midrule
-\texttt{grab}        & 1.000 & 0.667 & 0.800 & 6 \\
+\texttt{grab}        & 1.000 & 0.833 & 0.909 & 6 \\
 \texttt{release}     & 1.000 & 1.000 & 1.000 & 6 \\
-\texttt{swipe\_up}   & 0.714 & 1.000 & 0.833 & 5 \\
+\texttt{swipe\_up}   & 0.667 & 0.800 & 0.727 & 5 \\
 \texttt{swipe\_down} & 1.000 & 1.000 & 1.000 & 5 \\
 \texttt{noise}       & 0.857 & 0.857 & 0.857 & 7 \\
 \midrule
 \textbf{Overall accuracy} & \multicolumn{3}{c}{89.66\%} & 29 \\
-\textbf{Macro F1} & \multicolumn{3}{c}{0.898} & \\
-\textbf{Weighted F1} & \multicolumn{3}{c}{0.895} & \\
+\textbf{Macro F1} & \multicolumn{3}{c}{0.899} & \\
+\textbf{Weighted F1} & \multicolumn{3}{c}{0.900} & \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 The model achieves perfect performance on \texttt{release} and
-\texttt{swipe\_down}, while \texttt{grab} shows lower recall (0.667)
-with two samples misclassified---one as \texttt{swipe\_up} and one as
-\texttt{noise}. The \texttt{swipe\_up} class also shows lower precision
-(0.714) due to confusion with other classes. These errors are
-understandable given the spatial and temporal similarity between these
-gesture types. The overall accuracy of 89.66\% reflects the challenge
-of distinguishing similar hand motions from limited test data.
+\texttt{swipe\_down}, while \texttt{swipe\_up} shows lower precision
+(0.667) due to confusion with other classes. The \texttt{grab} class
+achieves high precision (1.000) but slightly lower recall (0.833),
+with one sample misclassified. These errors are understandable given
+the spatial and temporal similarity between these gesture types.
+The overall accuracy of 89.66\% reflects the challenge of
+distinguishing similar hand motions from limited test data.
 
 \subsection{Model Compression Trade-offs}
 
@@ -109,10 +109,8 @@ continuous background operation on mobile devices.
 
 \subsection{Demo}
 
-GrabDrop has been tested across multiple device configurations:
-Android phones paired with Linux desktops, two Android devices, and
-two desktop machines. In all cases, device discovery, gesture
+Grabdrop has been tested across two device configurations:
+Android phones paired with Windows desktops, and Android phones paired
+with Linux desktops. In both cases, device discovery, gesture
 recognition, and screenshot transfer functioned correctly across
-platforms. The source code and demo video are available in the
-accompanying repository.\footnote{Repository link included in the
-  project submission.}
+platforms.

@@ -64,27 +64,3 @@ statistics ($\boldsymbol\mu$ and $\boldsymbol\sigma$ vectors of
 dimension~144), landmark topology (finger chains, joint pairs,
 tip/base indices), and pruned channel dimensions. This ensures
 complete self-containment of the deployed artifact.
-
-\subsection{Optimization Summary}
-
-Table~\ref{tab:optimization_summary} summarizes the full optimization
-pipeline.
-
-\begin{table}[ht]
-\centering
-\caption{Model optimization pipeline summary.}
-\label{tab:optimization_summary}
-\begin{tabular}{@{}lcccc@{}}
-\toprule
-\textbf{Stage} & \textbf{Params} & \textbf{Size} & \textbf{Accuracy} & \textbf{Format} \\
-\midrule
-Original (FP32) & 87,077 & 0.34\,MB & 89.66\% & PyTorch \\
-Pruned (FP32) & 45,877 & 0.18\,MB & 89.66\% & PyTorch \\
-Original ONNX (FP32) & 87,077 & 0.09\,MB & 89.66\% & ONNX \\
-Pruned ONNX (FP32) & 45,877 & 0.09\,MB & 89.66\% & ONNX \\
-Pruned + Quantized (INT8) & 45,877 & 0.14\,MB & 89.66\% & ONNX \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-The ONNX format produces more compact files than PyTorch's serialization format. Notably, the INT8 quantized model is slightly larger than the FP32 ONNX models due to QDQ node overhead, as discussed above. For deployment, we select the quantized model primarily for its faster inference speed on mobile hardware rather than size reduction.
